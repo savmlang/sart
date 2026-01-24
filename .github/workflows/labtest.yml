@@ -1,0 +1,48 @@
+name: Runs Lab Tests
+
+on:
+  push:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fulltest:
+    name: Full Cargo Test
+
+    strategy:
+      fail-fast: true
+      matrix:
+        toolchain: [nightly]
+        triple:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+
+          - os: windows-11-arm
+            target: aarch64-pc-windows-msvc
+
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+
+          - os: macos-latest
+            target: x86_64-apple-darwin
+
+          - os: macos-latest
+            target: aarch64-apple-darwin
+
+    runs-on: ${{ matrix.triple.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ matrix.toolchain }}
+          targets: ${{ matrix.triple.target }}
+          components: clippy, miri
