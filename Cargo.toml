@@ -1,0 +1,12 @@
+[package]
+name = "sart"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ahash = "^0.8"
+pastey = "^0.2"
+
+dashmap = "^6"
+
+saffi = { path = "./saffi/ffi" }
