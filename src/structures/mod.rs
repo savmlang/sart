@@ -1,4 +1,5 @@
-use saffi::{boxed::RTSafeBoxWrapper, ctr::Instruction};
+use crate::ctr::Instruction;
+use saffi::boxed::RTSafeBoxWrapper;
 
 use dashmap::DashMap;
 
@@ -21,6 +22,17 @@ pub union QuadPackedData {
   pub i8: i8,
   pub f32: f32,
   pub f64: f64,
+
+  // SIMD
+  pub u8x8: [u8; 8],
+  pub u16x4: [u16; 4],
+  pub u32x2: [u32; 2],
+  pub i8x8: [i8; 8],
+  pub i16x4: [i16; 4],
+  pub i32x2: [i32; 2],
+  pub f32x2: [f32; 2],
+
+  // Complex
   pub complex: *mut RTSafeBoxWrapper,
   pub pointer: *mut c_void,
   pub selfref: *mut Self,

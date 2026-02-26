@@ -1,9 +1,8 @@
-use core::ffi::c_void;
+use std::os::raw::c_void;
 
 use crate::structures::QuadPackedData;
 
-/// the first argument actually is a reference to the VM Struct lol
-pub type DispatchFn = extern "C" fn(*mut c_void, *mut VMTaskState, u64);
+pub type DispatchFn = extern "C" fn(*mut CVMContext, *mut VMTaskState);
 
 /// If the pointer goes NULL
 /// You must use the 1st unsigned integer to get the module
@@ -17,7 +16,7 @@ pub union Instruction {
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct FnInstr {
-  pub module: u64,
+  pub arg: u64,
   pub dispatch: DispatchFn,
 }
 
@@ -38,10 +37,78 @@ pub struct VMTaskState {
   pub r5: QuadPackedData,
   pub r6: QuadPackedData,
   /// If this is NULL, this means this itself is the super task
-  pub super_: *mut VMTaskState,
+  pub super_: *mut Self,
   /// Instruction pointer, but represented as bytecode terminology
-  pub curline: usize,
+  ///
+  /// Please also note that, under JIT, it is used very differently
+  pub curline: Packed64,
 }
+
+#[rustfmt::skip]
+#[allow(non_snake_case)]
+pub mod FLAGS {
+  // The function is running under async-aware subsystem
+  // It makes the JIT not call the sync poll async method
+  pub const FLAG_ASYNC: u32 = 0b000000000000000000000000000000001;
+
+  // This VMTaskState is the 1st task state in the chain
+  // This means only this task chain can actually request vm to poll
+  pub const FLAG_FIRST: u32 = 0b000000000000000000000000000000010;
+}
+
+#[rustfmt::skip]
+#[allow(non_snake_case)]
+pub mod OPCODES {
+  pub const OPCODE_OK: u32 = 0;
+
+  pub const OPCODE_YIELD: u32 = 1;
+
+  pub const OPCODE_SLEEP_MS: u32 = 2;
+
+  // This task has suspended due to a libcall or VM await method
+  pub const OPCODE_AWAIT: u32 = 3;
+
+  // This task state has suspended due to a forward recurse
+  // This also is called for async SaVM functions since no
+  //
+  // SaVM function is async without a libcall await
+  pub const OPCODE_RECURSE: u32 = 4;
+}
+
+#[repr(C, align(64))]
+pub struct VMContext {
+  // --- Hot Path Flags (0-7) ---
+  pub flags: u32,
+  pub opcode: u32,
+
+  // --- Resources ---
+  pub engine: *const c_void, // this is a pointer to the VM Core Engine, Just for the sake of being
+  pub scratchpad: *mut c_void, // Pointer to a ScratchPad (+16 more variables)
+  pub largepad: *mut c_void, // Pointer to a dynamically requested allocation scratchpad (max. 16KB, 2048 64-bit data)
+
+  // --- State ---
+  pub resume: u64,
+  pub pt: Packed64,
+
+  // --- The Architectural Buffer ---
+  pub _reserved: [u8; 16],
+}
+
+#[repr(C)]
+pub union Packed64 {
+  pub unsigned: u64,
+  pub signed: i64,
+  pub bytes: [u8; 8],
+  pub pt: *mut c_void,
+}
+
+#[repr(C, align(64))]
+pub struct CVMContext {
+  pub _unstable: [u8; 64],
+}
+
+const _: () = assert!(align_of::<VMContext>() == 64);
+const _: () = assert!(size_of::<VMContext>() == 64);
 
 const _CHECK_REGISTER_SET_SIZE: usize =
   size_of::<VMTaskState>() - 1 * size_of::<usize>() - size_of::<*mut VMTaskState>();
@@ -84,77 +151,714 @@ macro_rules! instruction {
   };
 }
 
+// # DANGER
+// The VM will happily run undefined code without any form of bounds checking, be advised
+//
+// All numbers follow Little-Endian standard
+//
+// ## Register IDS
+// - r1 = 0
+// - r2 = 1
+// - r3 = 2
+// - r4 = 3
+// - r5 = 4
+// - r6 = 5
+//
+// # Type tag
+// - 0: u64
+// - 1: u32
+// - 2: u16
+// - 3: u8
+// - 4: i64
+// - 5: i32
+// - 6: i16
+// - 7: i8
+// - 8: f64
+// - 9: f32
 instruction! {
-    // --- I. Memory Management (Heap/Stack) ---
-    // (r1, r2, r3, r4, r5, r6 typically used for operands/pointers/sizes)
-    0x01 => alloc, // Allocate data from a register and move it into memory. The register should be treated as containing invalid data
-    0x02 => aralc, // TODO: FUTURE SPEC
-    0x03 => load,  // Load data from heap, `load 0u8 <addr>` to load from heap
-    0x04 => free,  // Drop the associated complex data from the heap. Running on primitive types is undefined behaviour
-    0x05 => own,   // Move value from Heap to r<n>
-    0x06 => mark,  // Mark for jump instructions
-    0x07 => clr,   // Clear a register/value. NOTE: This does not drop associated complex heap value
-    0x08 => clrs,  // Clear all the registers/values. NOTE: This does not drop associated complex heap value
+  // This is a multi-purpose SIMD Acceleratable, scalar deoptimizable parallel
+  // MOV Operation
+  //
+  // Please note that this can (and does) also act as `load` operation
+  //
+  // ## Syntax
+  // `vcopy <count tag (1-bit)> <memory flags [future spec] (7bits)> <src flags as u8> <count in u32> <base src1 as i32> <base target2 as i32>`
+  //
+  // # Count tag
+  // - 0: Treat the next as absolute
+  // - 1: Get count from r1, the next 32-bits treated as expected count (optimization hint)
+  //
+  // # Memory Flags
+  // [alignment data (2-bits)] # for source 1
+  // [alignment data (2-bits)] # for source 2
+  // [padding]
+  //
+  // ## Alignment Data
+  // 00: Unknown (Assumes unaligned; goes to max unaligned allowed)
+  // 01: 16-bytes (Goes to max AVX)
+  // 10: 32-bytes (Goes to max AVX2)
+  // 11: 64-bytes (Goes to max AVX512)
+  //
+  // Count is taken as BYTES
+  //
+  // ## Src Flags are as follows (2x4-bit numbers):
+  //  [Src1] [Target1]
+  //
+  // ## Src1, Target1 has the following value composition
+  // - 1-5: Register r2 through r6 indices
+  // - 7: Small Scratchpad
+  // - 8: Large Scratchpad
+  // - 9: Pointer, pointer read from r2 as 64-bit pointer
+  //
+  // the 32-bit in base src1, base target2 gets treated as +-offset
+  01 => vcopy,
+  // Move data between registers
+  //
+  // `mov <source register id> <target register id>`
+  02 => mov,
+  // Load a value in Registry.
+  // This is a scalar instruction that writes a constant to the register
+  // or map
+  //
+  // ## Loading a constant to register
+  // `reg 0 1..6 0xFFFFFFFFFFFFFFFF`
+  //
+  // ## Loading a constant to the scratchpad
+  // `reg 1 0..255 0xFFFFFFFFFFFFFFFF`
+  //
+  // ## Loading a constant to the scratchpad
+  // `reg 2 0xFFFFFFFFFFFFFFFF`
+  // The pointer must be stored in `r1`
+  //
+  // Please note that you must ensure the data follows
+  // Little-Endian Standard
+  03 => reg,
+  // This is bytecode resolver guidance
+  // The mark is followed by a 64-bit data
+  //
+  // It is assumed Little-Endian but has no significant interpretation
+  //
+  // `mark 0xFFFFFFFFFFFFFFFF`
+  //
+  // This address will be used by `async`, `jz`, `jnz`, `jmp`
+  04 => mark,
 
-    // --- II. Basic Data & Register Operations ---
-    0x09 => put_reg, // TODO: FUTURE SPEC; Put immediate value in any register. `put_reg <register u8> <total bytes u8; can it 1/2/4/8> <bytes>`
+  // Control Flow Arguments
+  //
+  // These take a fictious 64-bit data as argument defined before/after by `mark`
+  //
+  // `jmp 0xFFFFFFFFFFFFFFFF`
+  // `jz 0xFFFFFFFFFFFFFFFF`
+  // `jnz 0xFFFFFFFFFFFFFFFF`
+  05 => jmp,
+  // Jump-IF
+  //
+  // `jif <intent id (1bit)> <location src (4-bits)> <padding (2-bits)> <base src1 as i32>`
+  //
+  // ## Location Src has the following value composition
+  // - 1-5: Register r2 through r6 indices
+  // - 7: Small Scratchpad
+  // - 8: Large Scratchpad
+  // - 9: Pointer, pointer read from r2 as 64-bit pointer
+  //
+  // | Intent ID                | Description                |
+  // | ------------------------ | -------------------------- |
+  // | 0                        | JZ, Jump if Zero           |
+  // | 1                        | JNZ, Jump if Not-Zero      |
+  06 => jif,
+  // This is a multi-purpose SIMD Acceleratable, scalar deoptimizable parallel
+  // CMP Operation
+  //
+  // ## Syntax
+  // `vcmp <count tag (1-bit)> <operation (7-bit)> <src flags as u16> <count in u32> <base src1 as i32> <base src2 as i32> <base target3 as i32>`
+  //
+  // # Count tag
+  // - 0: Treat the next as absolute
+  // - 1: Get count from r1, the next 32-bits treated as expected count (optimization hint)
+  //
+  // | Operation                | Description                   |
+  // | ------------------------ | ----------------------------- |
+  // |    INTEGRAL OPS          |                               |
+  // | 0                        | Equal                         |
+  // | 1                        | Not Equal                     |
+  // | 2                        | Signed Less Than              |
+  // | 3                        | Unsigned Less Than            |
+  // | 4                        | Signed Less Than Equal        |
+  // | 5                        | Unsigned Less Than Equal      |
+  // | 6                        | Signed Greater Than           |
+  // | 7                        | Unsigned Greater Than         |
+  // | 8                        | Signed Greater Than Equal     |
+  // | 9                        | Unsigned Greater Than Equal   |
+  // |    FLOATING OPS          |                               |
+  // | 10                       | Ordered                       |
+  // | 11                       | Unordered                     |
+  // | 12                       | Equal                         |
+  // | 13                       | NotEqual                      |
+  // | 14                       | OrderedNotEqual               |
+  // | 15                       | UnorderedOrEqual              |
+  // | 16                       | LessThan                      |
+  // | 17                       | LessThanOrEqual               |
+  // | 18                       | GreaterThan                   |
+  // | 19                       | GreaterThanOrEqual            |
+  // | 20                       | UnorderedOrLessThan           |
+  // | 21                       | UnorderedOrLessThanOrEqual    |
+  // | 22                       | UnorderedOrGreaterThan        |
+  // | 23                       | UnorderedOrGreaterThanOrEqual |
+  //
+  // Count is taken as Count and not bytes
+  //
+  // ## Src Flags are as follows (4x4-bit numbers):
+  //  [Src1] [Src2] [Target1] [PADDING]
+  //
+  // ## Src1, Src2, Target1 has the following value composition
+  // - 1-5: Register r2 through r6 indices
+  // - 7: Small Scratchpad
+  // - 8: Large Scratchpad
+  // - 9: Pointer, pointer read from r2 as 64-bit pointer
+  //
+  // Please note the the target1 is treated as a scalar or vector output following this rubric (from cranelift docs):
+  // - When comparing scalars, the result is: - 1 if the condition holds. - 0 if the condition does not hold.
+  // - When comparing vectors, the result is: - -1 (i.e. all ones) in each lane where the condition holds. - 0 in each lane where the condition does not hold.
+  //
+  // the next 32-bit gets treated as +-offset
+  07 => vcmp,
 
-    // --- III. Control Flow ---
-    0x0A => jmp,     // Unconditional jump
-    0x0B => jz,      // Jump if zero
-    0x0C => jnz,     // Jump if not zero
-    //`ret` instruction has been removed. Please use jump calls along with super_mov to simulate the same
+  // --- Arithmatic (+Vectored)
 
-    0x0D => cmp,     // Compare 64-bit unsigned values (r1, r2)
-    // Mov data b/w registers
-    0x0E => mov,
+  // True Vectored Addition Operator
+  //
+  // It is automatically deoptimized to the
+  // highest SIMD level supported
+  //
+  // ## Syntax
+  // `vadd <flags as u32 [4 bytes]> <count in u32> <base src1 as i32> <base src2 as i32> <base target1 as i32>`
+  //
+  // Flags are like this:
+  //   [<type tag (3 bits)> <count bit>] [Src1 (4-bits)] [Src2 (4-bits)] [Target1 (4-bits)] [<Carry/Sigflow bit>] [<saturation bit>] [Padding]
+  //
+  // # Carry/Sigflow bit
+  // - 0: Does not emit carry or other flags
+  // - 1: Transforms into ADC, r5 is treated as carry bit and it sets overflow in r5, please note this needs count=1 exactly
+  //
+  // # If Saturation bit is `1`, we use saturating ADD. Example below:
+  // i8: 120 + 30 = 127
+  // u8: 250 + 30 = 255
+  //
+  // (We automatically handle SIMD vs NON-SIMD saturating issues)
+  //
+  // # Count bit
+  // - 0: Treat the next as absolute
+  // - 1: Get count from r1, the u32 count is treated as expected count (optimization hint)
+  //
+  // ## Src1, Src2, Target1 has the following value composition
+  // - 1-5: Register r2 through r6 indices
+  // - 7: Small Scratchpad
+  // - 8: Large Scratchpad
+  // - 9: Pointer, pointer read from r2 as 64-bit pointer
+  //
+  // the next 32-bit gets treated as +-offset
+  08 => vadd,
+  // True Vectored Floating Addition Operator
+  //
+  // It is automatically deoptimized to the
+  // highest SIMD level supported
+  //
+  // ## Syntax
+  // `vaddf <flags as u16> <count in u32> <base src1 as i32> <base src2 as i32> <base target1 as i32>`
+  //
+  // The carry is stored exactly how `cmp` stores it, you can jif for overflow (and select your type, unsigned or unsigned) to get the carry bit
+  //
+  // # Type tag is defined above
+  // The flags is split like this into (4-bits + 3 x 4-bit parts):
+  //   [00 <float type> <count bit>] [Src1] [Src2] [Target1]
+  //
+  // <float type>: 0 = f64, 1 = f32
+  //
+  // # Count bit
+  // - 0: Treat the next as absolute
+  // - 1: Get count from r1, the u32 count is treated as expected count (optimization hint)
+  //
+  // ## Src1, Src2, Target1 has the following value composition
+  // - 1-5: Register r2 through r6 indices
+  // - 7: Small Scratchpad
+  // - 8: Large Scratchpad
+  // - 9: Pointer, pointer read from r2 as 64-bit pointer
+  //
+  // the next 32-bit gets treated as +-offset
+  09 => vaddf,
+  // True Vectored Subtraction Operator
+  //
+  // It is automatically deoptimized to the
+  // highest SIMD level supported
+  //
+  // ## Syntax
+  // `vsub <flags as u32 [4 bytes]> <count in u32> <base src1 as i32> <base src2 as i32> <base target1 as i32>`
+  //
+  // The layout is similar and idompotent to `vadd` with the below difference
+  //
+  // # Carry/Sigflow bit
+  // - 0: Does not emit carry or other flags
+  // - 1: Transforms into SBB, r5 is treated as borrow bit and it sets flags like borrow in r5 back, please note this needs count=1 exactly
+  10 => vsub,
+  // True Vectored Floating Subtraction Operator
+  //
+  // It is automatically deoptimized to the
+  // highest SIMD level supported
+  //
+  // ## Syntax
+  // `vsub <flags as u16> <count in u32> <base src1 as i32> <base src2 as i32> <base target1 as i32>`
+  //
+  // The layout is similar and idompotent to `vaddf` with the below difference
+  //
+  // # Carry/Sigflow bit
+  // - 0: Does not emit carry or other flags
+  // - 1: Emits flags, please note this request needs count=1 exactly
+  11 => vsubf,
+  // True Vectored Multiplication Operator
+  //
+  // It is automatically deoptimized to the
+  // highest SIMD level supported
+  //
+  // ## Syntax
+  // `vmul <flags as u32 [4 bytes]> <count in u32> <base src1 as i32> <base src2 as i32> <base target1 as i32>`
+  //
+  // The layout is similar and idompotent to `vadd` with the below difference
+  //
+  // Flags are like this:
+  //   [<type tag (3 bits)> <count bit>] [Src1 (4-bits)] [Src2 (4-bits)] [Target1 (4-bits)] [<Extended Flags (2 bits)>] [Padding]
+  //
+  // The extended flags:
+  // - x0: Output the 1st 32-bits (i.e. low bits on LE)
+  // - x1: Output the 2nd 32-bit (i.e. high bits on LE)
+  // - 1x: we use Wide Multiplication (target must be able to store upto 2x the count)
+  // - 0x: we use Lossy Multiplication (this is only time the other bit is read)
+  12 => vmul,
+  // True Vectored Floating Subtraction Operator
+  //
+  // It is automatically deoptimized to the
+  // highest SIMD level supported
+  //
+  // ## Syntax
+  // `vmulf <flags as u16> <count in u32> <base src1 as i32> <base src2 as i32> <base target1 as i32>`
+  //
+  // The layout is similar and idompotent to `vaddf` with the below difference
+  //
+  // # Carry/Sigflow bit: Has no significance
+  13 => vmulf,
+  // Integer Division Operator
+  //
+  // ## Syntax
+  // `div <args as u16> <base src1 as i32> <base src2 as i32> <base target1 as i32>`
+  //
+  // The 16-bit args are distributed as follows (4x4-bit slices):
+  //   [Type tag] [Src1] [Src2] [Target1]
+  //
+  // Standard integer division emits no flags
+  //
+  // ## Src1, Src2, Target1 has the following value composition
+  // - 1-5: Register r2 through r6 indices
+  // - 7: Small Scratchpad
+  // - 8: Large Scratchpad
+  // - 9: Pointer, pointer read from r2 as 64-bit pointer
+  //
+  // the next 32-bit gets treated as +-offset
+  14 => div,
+  // Integer Remainder Operator
+  //
+  // ## Syntax
+  // `div <args as u16> <base src1 as i32> <base src2 as i32> <base target1 as i32>`
+  //
+  // The 16-bit args are distributed as follows (4x4-bit slices):
+  //   [Type tag] [Src1] [Src2] [Target1]
+  //
+  // ## Src1, Src2, Target1 has the following value composition
+  // - 1-5: Register r2 through r6 indices
+  // - 7: Small Scratchpad
+  // - 8: Large Scratchpad
+  // - 9: Pointer, pointer read from r2 as 64-bit pointer
+  //
+  // the next 32-bit gets treated as +-offset
+  15 => rem,
+  // True Vectored Floating Subtraction Operator
+  //
+  // It is automatically deoptimized to the
+  // highest SIMD level supported
+  //
+  // ## Syntax
+  // `vdivf <flags as u16> <count in u32> <base src1 as i32> <base src2 as i32> <base target1 as i32>`
+  //
+  // The layout is similar and idompotent to `vaddf` with the below difference
+  //
+  // # Carry/Sigflow bit: Has no significance
+  16 => vdivf,
+  // Casting types operation
+  //
+  // `cast <flags as u16> <base src1 as i32> <base target1 as i32>`
+  //
+  // The 16-bit args are distributed as follows (4x4-bit slices):
+  //   [Type tag Initial] [Type tag Final] [Src1] [Target1]
+  //
+  // This only supports:
+  // - sextend
+  // - uextend
+  // - ireduce
+  //
+  // ## Src1, Target1 has the following value composition
+  // - 1-5: Register r2 through r6 indices
+  // - 7: Small Scratchpad
+  // - 8: Large Scratchpad
+  // - 9: Pointer, pointer read from r2 as 64-bit pointer
+  17 => cast,
 
-    // --- IV. Arithmetic (r1, r2 are 64-bit unsigned inputs) ---
-    0x0F => add,
-    0x10 => sub,
-    0x11 => mul,
-    0x12 => div,
-    0x13 => rem, // Remainder
+  // True Vectored Negation Operator
+  //
+  // It is automatically deoptimized to the
+  // highest SIMD level supported
+  //
+  // ## Syntax
+  // `vneg <flags as u16 [2 bytes]> <count in u32> <base src1 as i32> <base target1 as i32>`
+  //
+  // Flags are like this:
+  //   [<type tag (4 bits)> <count bit>] [Src1 (4-bits)] [Target1 (4-bits)] [Padding]
+  //
+  // Please note that this is defined only for `i*` types and `f*` types. neg of iN::MIN is undefined
+  //
+  // # Count bit
+  // - 0: Treat the next as absolute
+  // - 1: Get count from r1, the u32 count is treated as expected count (optimization hint)
+  //
+  // ## Src1, Target1 has the following value composition
+  // - 1-5: Register r2 through r6 indices
+  // - 7: Small Scratchpad
+  // - 8: Large Scratchpad
+  // - 9: Pointer, pointer read from r2 as 64-bit pointer
+  //
+  // the next 32-bit gets treated as +-offset
+  18 => vneg,
+  // Similar to `vneg` in terms of syntax.
+  // Does the abs(x) operation
+  //
+  // Only defined for `i*` and `f*` types, abs(iN::MIN) is not defined
+  19 => vabs,
 
-    // --- V. Arithmetic Mutating (r6 is output pointer) ---
-    0x14 => add_mut,
-    0x15 => sub_mut,
-    0x16 => mul_mut,
-    0x17 => div_mut,
-    0x18 => rem_mut,
+  // Same syntax as `vneg` but only floats supported
+  20 => vceil,
+  21 => vfloor,
+  22 => vtrunc,
+  23 => vnearest,
 
-    // --- VI. Bitwise (r1, r2 are 64-bit unsigned inputs) ---
-    0x19 => and,
-    0x1A => or,
-    0x1B => xor,
+  // The below bitwise operation has the exact true verctored syntax like vabs with no undefined behaviour
+  //
+  // It is automatically deoptimized to the
+  // highest SIMD level supported
+  //
+  // ## Syntax
+  // `vb* <flags as u16> <padding (3-bits)> <count bit (1-bit)> <count in u32> <base src1 as i32> <base src2 as i32> <base target1 as i32>`
+  //
+  // The carry is stored exactly how `cmp` stores it, you can jif for overflow (and select your type, unsigned or unsigned) to get the carry bit
+  //
+  // # Type tag is defined above
+  // The flags is split like this into (4-bits + 3 x 4-bit parts):
+  //   [Type Tag (4-bits)] [Src1] [Src2] [Target1]
+  //
+  // # Count bit
+  // - 0: Treat the next as absolute
+  // - 1: Get count from r1, the u32 count is treated as expected count (optimization hint)
+  //
+  // ## Src1, Src2, Target1 has the following value composition
+  // - 1-5: Register r2 through r6 indices
+  // - 7: Small Scratchpad
+  // - 8: Large Scratchpad
+  // - 9: Pointer, pointer read from r2 as 64-bit pointer
+  //
+  // the next 32-bit gets treated as +-offset
 
-    // --- VII. Bitwise Mutating (r6 is output pointer) ---
-    0x1C => and_mut,
-    0x1D => or_mut,
-    0x1E => xor_mut,
+  24 => vband,
+  25 => vbor,
+  26 => vbxor,
 
-    // --- VIII. Bitshift (r1 is value, r2 is shift amount) ---
-    0x1F => shl, // Shift left
-    0x20 => shr, // Shift right
+  // Src2 is ignored here
+  27 => vbnot,
 
-    // --- IX. Bitshift Mutating (r6 is output pointer) ---
-    0x21 => shl_mut,
-    0x22 => shr_mut,
+  // x | ~y
+  28 => vbor_not,
 
-    // --- X. Pointer Arithmetic (r1, r2 treated as pointers and deferenced to get 64-bit unsigned memory) ---
-    0x23 => add_ptr,
-    0x24 => sub_ptr,
-    0x25 => offset_ptr,
+  // `x & ~y`
+  29 => vband_not,
 
-    // --- XII. System & Threading ---
-    // TODO: Better Threading Management, eg. is_running <thread hwnd>
-    0x26 => libcall,
-    0x27 => spawn,   // Threading: Create new thread
-    0x28 => join,    // TODO: FUTURE SPEC; Threading: Wait for thread
-    0x29 => yield,   // Threading: Give up time
-    0x2A => await,   // Threading: Asynchronous wait
+  // `x ^ ~y`
+  30 => vbxor_not,
+  // Truly Vectored Rotation
+  //
+  // These are SIMD Acceleratable
+  // ## Syntax
+  // `vrot <flags as u16> <padding (3-bits)> <rotation bit (1-bit)> <count in u32> <base src1 as i32> <amount src i.e. src2 as i32> <base target1 as i32>`
+  //
+  // # Type tag is defined above
+  // The flags is split like this into (4-bits + 3 x 4-bit parts):
+  //   [Type Tag (4-bits)] [Src1] [Src2] [Target1]
+  //
+  // Src2 i.e. amount to shift by is a scalar not a vector!!! Also, it is to be the UNSIGNED variant of the bit.
+  // Src2 defines how many bits to shift
+  // Example:
+  // - for `shl` of i64 types, you need to pass Src2 as 1 single u64 no matter the count
+  // - for `shl` of u64 types, you need to pass Src2 as 1 single u64 no matter the count
+  //
+  // All the lanes are equally bit-shifted
+  //
+  // # Rotation bit
+  // - 0: rotl (Rotate Left)
+  // - 1: rotr (Rotate Right)
+  //
+  // ## Src1, Src2, Target1 has the following value composition
+  // - 1-5: Register r2 through r6 indices
+  // - 7: Small Scratchpad
+  // - 8: Large Scratchpad
+  // - 9: Pointer, pointer read from r2 as 64-bit pointer
+  //
+  // the next 32-bit gets treated as +-offset
+  31 => vrot,
 
-    // --- XIII. Library-Only Instructions (Accesses Super Context) ---
-    0x2B => super_mov, // Load register data from the caller. Usage `super_mov <target register> <load from register>`
-    0x2C => mov_to_super
+  // Truly Vectored SHL & SHR
+  //
+  // These are SIMD Acceleratable
+  // ## Syntax
+  // `vs* <flags as u16> <padding (3-bits)> <count bit (1-bit)> <count in u32> <base src1 as i32> <amount i.e. src2 as i32> <base target1 as i32>`
+  //
+  // # Type tag is defined above
+  // The flags is split like this into (4-bits + 3 x 4-bit parts):
+  //   [Type Tag (4-bits)] [Src1] [Src2] [Target1]
+  //
+  // Floating types are not supported!
+  // Src2 i.e. amount to shift by is a scalar not a vector!!! Also, it is to be the UNSIGNED variant of the bit.
+  // Example:
+  // - for `shl` of i64 types, you need to pass Src2 as 1 single u64 no matter the count
+  // - for `shl` of u64 types, you need to pass Src2 as 1 single u64 no matter the count
+  //
+  // All the lanes are equally bit-shifted
+  //
+  // # Count bit
+  // - 0: Treat the next as absolute
+  // - 1: Get count from r1, the u32 count is treated as expected count (optimization hint)
+  //
+  // ## Src1, Src2, Target1 has the following value composition
+  // - 1-5: Register r2 through r6 indices
+  // - 7: Small Scratchpad
+  // - 8: Large Scratchpad
+  // - 9: Pointer, pointer read from r2 as 64-bit pointer
+  //
+  // the next 32-bit gets treated as +-offset
+
+  32 => vshl,
+  33 => vshr,
+
+  // True Vectored POPCNT
+  //
+  // It is automatically deoptimized to the
+  // highest SIMD level supported
+  //
+  // ## Syntax
+  // `vpopcnt <flags as u16 [2 bytes]> <count in u32> <base src1 as i32> <base target1 as i32>`
+  //
+  // Flags are like this:
+  //   [<type tag (4 bits)> <count bit>] [Src1 (4-bits)] [Target1 (4-bits)] [Padding]
+  //
+  // # Count bit
+  // - 0: Treat the next as absolute
+  // - 1: Get count from r1, the u32 count is treated as expected count (optimization hint)
+  //
+  // ## Src1, Target1 has the following value composition
+  // - 1-5: Register r2 through r6 indices
+  // - 7: Small Scratchpad
+  // - 8: Large Scratchpad
+  // - 9: Pointer, pointer read from r2 as 64-bit pointer
+  //
+  // the next 32-bit gets treated as +-offset
+  34 => vpopcnt,
+  // Truly Vectored Min-Max Operator
+  //
+  // These are SIMD Acceleratable
+  // ## Syntax
+  // `vminimax <flags as u16> <padding (3-bits)> <Max (1-bit)> <count in u32> <base src1 as i32> <base src2 as i32> <base target1 as i32>`
+  //
+  // # Type tag is defined above
+  // The flags is split like this into (4-bits + 3 x 4-bit parts):
+  //   [Type Tag (4-bits)] [Src1] [Src2] [Target1]
+  //
+  // # Max bit
+  // - 0: min (Minimum)
+  // - 1: max (Maximum)
+  //
+  // ## Src1, Src2, Target1 has the following value composition
+  // - 1-5: Register r2 through r6 indices
+  // - 7: Small Scratchpad
+  // - 8: Large Scratchpad
+  // - 9: Pointer, pointer read from r2 as 64-bit pointer
+  //
+  // the next 32-bit gets treated as +-offset
+  35 => vminimax,
+  // Count Zeroes
+  //
+  // ## Syntax
+  // `cz <flags as u16> <base src1 as i32> <base target1 as i32>`
+  //
+  // # Type tag is defined above
+  // The flags is split like this into (4-bits + 2 x 4-bit parts + 4-bits):
+  //   [Type Tag (4-bits)] [Src1] [Target1] [Operation (2bit)] [Padding]
+  //
+  // # Operation
+  // - 00: Count leading zeroes
+  // - 01: Count training zeroes
+  // - 10: Count leading sign bits
+  //
+  // ## Src1, Target1 has the following value composition
+  // - 1-5: Register r2 through r6 indices
+  // - 7: Small Scratchpad
+  // - 8: Large Scratchpad
+  // - 9: Pointer, pointer read from r2 as 64-bit pointer
+  //
+  // the next 32-bit gets treated as +-offset
+  36 => cz,
+
+  // True Vectored Floating Fused-Multiply-Add Operator
+  //
+  // It is automatically deoptimized to the
+  // highest SIMD level supported
+  //
+  // ## Syntax
+  // `vfma <flags as u20> <count in u32> <base src1 as i32> <base src2 as i32> <base src3 as i32> <base target1 as i32>`
+  //
+  // The carry is stored exactly how `cmp` stores it, you can jif for overflow (and select your type, unsigned or unsigned) to get the carry bit
+  //
+  // # Type tag is defined above
+  // The flags is split like this into (4-bits + 4 x 4-bit parts):
+  //   [00 <float type> <count bit>] [Src1] [Src2] [Src3] [Target1]
+  //
+  // <float type>: 0 = f64, 1 = f32
+  //
+  // # Count bit
+  // - 0: Treat the next as absolute
+  // - 1: Get count from r1, the u32 count is treated as expected count (optimization hint)
+  //
+  // ## Src1, Src2, Src3, Target1 has the following value composition
+  // - 1-5: Register r2 through r6 indices
+  // - 7: Small Scratchpad
+  // - 8: Large Scratchpad
+  // - 9: Pointer, pointer read from r2 as 64-bit pointer
+  //
+  // the next 32-bit gets treated as +-offset
+  37 => vfma,
+
+  // --- System and threading ---
+
+  // Sync calling
+  //
+  // The syntax is
+  // `synccall <section id as u64>`
+  //
+  // Please note that using `synccall` for async SectionID is full on undefined
+  //
+  // ## ⚠️ Performance Regression
+  // On async module, this blocks.
+  38 => synccall,
+  // Async Call
+  //
+  // The syntax is
+  // `asynccall <section id as u64> <mark id (to resume from) as u64>`
+  //
+  // Please note:
+  // - If the calling section is async-enabled, This is perfectly cooperatively poll
+  // - If the calling section is a sync section, This is perfectly block
+  39 => asynccall,
+
+  // Spawns a section id as a new task
+  //
+  // `spawn <flags as u8> <section id as u64> <scratchpad copy idx as u32> <scratch copy end idx as u32 (exclusive)>`
+  //
+  // ## Flags:
+  //    [] [] [] [] [ReturnScratchpad] [NoScratchpadCopy] [NoRegCopy] [Handle]
+  // - Handle: Return a Spawn Handle. Must be enabled to use the below traits.
+  // - NoRegCopy: Do not copy host register
+  // - NoScratchpadCopy: Do not copy scratchpad register
+  // - ReturnScratchpad: Also return the scratchpad of the spawned thread
+  40 => spawn,
+
+  // This is multiple intents:
+  // - It yields back control to the VM and allows AtomicJIT Swapping to take place
+  //
+  // `yield <mark id as u64>`
+  41 => yield,
+
+  // A delay function that sleeps the thread for given ms
+  //
+  // `waitms <ms as u64> <mark id as u64>`
+  //
+  // This function yields back control to the VM to allow AtomicJIT Swapping to take place.
+  42 => waitms,
+
+  // Atomic Instruction Family
+  //
+  // Please note the Atomics ONLY apply to pointers and numbers, hence types
+  // are given as follows. Also, since these are atomics, we only allow registers
+  //
+  // [Sub Opcode (2-bits)] [type (4-bit)] [reserved heuristic space (26-bits)] [instruction defined]
+  //
+  // ## Sub Opcode
+  // 00: CAS
+  // 01: LOAD
+  // 10: RMW
+  // 11: STORE
+  //
+  // # Type
+  // 0000: u64/Pointer
+  // 0001: u32
+  // 0010: u16
+  // 0011: u8
+  // 0100: i64
+  // 0101: i32
+  // 0110: i16
+  // 0111: i32
+  // 1000: i16
+  // 1001: i8
+  //
+  // # CAS
+  // CAS stands for `Compare-And-Swap`
+  // Here is the instruction defined space
+  // ord[3-bit] p1[3-bit] e[3-bit] x[3-bit] ret[3-bit]
+  //
+  // ord = future spec, prefer zeroes only
+  // p1 = pointer (64-bit must)
+  // e = Expected value
+  // x = Value to be stored
+  //
+  // This returns the old value directly in a register specified in ret
+  //
+  // register id 1-6 == r1 through r6
+  //
+  // # Store
+  // Stores a value to the atomic memory region
+  //
+  // Instruction defined space
+  // ord[3-bits] p1[3-bit] x[3-bit]
+  //
+  // ord = future spec, use zeroes only
+  // p1 = pointer (64-bit must)
+  // x = Value to be stored
+  //
+  // # RMW
+  // Atomically read-modify-write
+  //
+  // ord[3-bit] op[4-bit] p1[3-bit] o[3-bit] ret[3-bit]
+  //
+  // org = future spec, use zeroes only
+  //
+  // # Load
+  // Atomically load memory from p1 address
+  //
+  // ord[3-bit] p1[3-bit] ret[3-bit]
+  //
+  // ord = future spec,
+  // p1 = register that has the target pointer
+  // ret = output register
+  43 => atomic
 }

@@ -1,0 +1,62 @@
+
+// Old set
+// instruction! {
+//     // --- I. Memory Management (Heap/Stack) ---
+//     // (r1, r2, r3, r4, r5, r6 typically used for operands/pointers/sizes)
+// 0x01 => alloc, // Allocate data from a register and move it into memory. The register should be treated as containing invalid data
+// 0x03 => load,  // Load 64-bit data, `load 0u8 <addr>` to load from heapmap into r1, `load 0u8 r<id>` to load the first 64 bits into this register r1
+// 0x04 => free,  // Drop the associated complex data from the heap. Running on primitive types is undefined behaviour
+// 0x05 => own,   // Move value from Heap to r<n>
+// 0x06 => mark,  // Mark for jump instructions
+// 0x07 => clr,   // Clear a register/value. NOTE: This does not drop associated complex heap value
+// 0x08 => clrs,  // Clear all the registers/values. NOTE: This does not drop associated complex heap value
+
+// --- II. Basic Data & Register Operations ---
+// 0x09 => put_reg, // TODO: FUTURE SPEC; Put immediate value in any register. `put_reg <register u8> <total bytes u8; can it 1/2/4/8> <bytes>`
+
+//     // --- III. Control Flow ---
+// 0x0A => jmp,     // Unconditional jump
+// 0x0B => jz,      // Jump if zero
+// 0x0C => jnz,     // Jump if not zero
+// `ret` instruction has been removed. Please use jump calls along with super_mov to simulate the same
+
+// 0x0D => cmp,     // Compare 64-bit unsigned values (r1, r2)
+// Mov data b/w registers
+// 0x0E => mov,
+
+// --- IV. Arithmetic (r1, r2 are 64-bit unsigned inputs) ---
+//     0x0F => addc,
+//     0x10 => subc,
+//     0x11 => mulx,
+//     0x12 => div,
+//     0x13 => rem, // Remainder
+
+//     // --- V. Arithmetic Mutating (r6 is output pointer) ---
+//     0x14 => divrem,
+
+//     // --- VI. Bitwise (r1, r2 are 64-bit unsigned inputs) ---
+//     0x19 => and,
+//     0x1A => or,
+//     0x1B => xor,
+
+//     // --- VIII. Bitshift (r1 is value, r2 is shift amount) ---
+//     0x1F => shl, // Shift left
+//     0x20 => shr, // Shift right
+
+//     // --- X. Pointer Arithmetic (r1, r2 treated as pointers and deferenced to get 64-bit unsigned memory) ---
+//     0x23 => add_ptr,
+//     0x24 => sub_ptr,
+//     0x25 => offset_ptr,
+
+//     // --- XII. System & Threading ---
+//     // TODO: Better Threading Management, eg. is_running <thread hwnd>
+//     0x26 => libcall,
+//     0x27 => spawn,   // Threading: Create new thread
+//     0x28 => join,    // TODO: FUTURE SPEC; Threading: Wait for thread
+//     0x29 => yield,   // Threading: Give up time
+//     0x2A => await,   // Threading: Asynchronous wait
+
+//     // --- XIII. Library-Only Instructions (Accesses Super Context) ---
+//     0x2B => super_mov, // Load register data from the caller. Usage `super_mov <target register> <load from register>`
+//     0x2C => mov_to_super
+// }
