@@ -1,5 +1,4 @@
 use crate::ctr::Instruction;
-use saffi::boxed::RTSafeBoxWrapper;
 
 use dashmap::DashMap;
 
@@ -33,7 +32,6 @@ pub union QuadPackedData {
   pub f32x2: [f32; 2],
 
   // Complex
-  pub complex: *mut RTSafeBoxWrapper,
   pub pointer: *mut c_void,
   pub selfref: *mut Self,
 

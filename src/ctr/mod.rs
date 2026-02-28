@@ -2,7 +2,7 @@ use std::os::raw::c_void;
 
 use crate::structures::QuadPackedData;
 
-pub type DispatchFn = extern "C" fn(*mut CVMContext, *mut VMTaskState);
+pub type DispatchFn = extern "C" fn(*mut CVMTaskState);
 
 /// If the pointer goes NULL
 /// You must use the 1st unsigned integer to get the module
@@ -25,23 +25,70 @@ pub struct FnInstr {
 /// under the Runtime
 ///
 /// PLEASE DO NOT CHANGE THE LAYOUT, IT MAY BREAK
-// 32-bit CPUs benefit from 64-bit alignment as well, not changing alignment
+/// 32-bit CPUs benefit from 64-bit alignment as well, not changing alignment
 #[repr(C, align(64))]
 pub struct VMTaskState {
-  /// Registers : `r1 through r6`
-  /// Please note the this means that the data is simply a 64-bit value with intension defined by the instruction
+  // Register Structures (64*8 bits, 64bytes)
   pub r1: QuadPackedData,
   pub r2: QuadPackedData,
   pub r3: QuadPackedData,
   pub r4: QuadPackedData,
   pub r5: QuadPackedData,
   pub r6: QuadPackedData,
-  /// If this is NULL, this means this itself is the super task
-  pub super_: *mut Self,
-  /// Instruction pointer, but represented as bytecode terminology
-  ///
-  /// Please also note that, under JIT, it is used very differently
-  pub curline: Packed64,
+  pub r7: QuadPackedData,
+  pub r8: QuadPackedData,
+
+  // Part II, pads
+  pub scratchpad: *mut QuadPackedData,
+  pub largepad: *mut QuadPackedData, // Initially NULL, allocated on request
+
+  // --- Hot Path Flags (0-7) ---
+  pub flags: u32,
+  pub opcode: u32,
+
+  // Instruction pointer in bytecode.
+  // Resume data for JIT under JIT-Code
+  //
+  // Please also note that, under JIT, it is used very differently
+  pub curline_or_resume: Packed64,
+  // This stores the pointer to the engine
+  // But during cooperative async, this is replaced with the pointer of
+  // of the AsyncTask (for FFI created async)
+  //
+  // or, NULL for bytecode defined async
+  //
+  // This is interpreter's favourite location to embed data
+  // in interpretation mode
+  pub engine_or_pt: Packed64,
+
+  __reserved: [u8; 16],
+}
+
+#[repr(C, align(64))]
+pub struct CVMTaskState {
+  pub r1: QuadPackedData,
+  pub r2: QuadPackedData,
+  pub r3: QuadPackedData,
+  pub r4: QuadPackedData,
+  pub r5: QuadPackedData,
+  pub r6: QuadPackedData,
+  pub r7: QuadPackedData,
+  pub r8: QuadPackedData,
+
+  // Part II, pads
+  pub _internal_ptr1: *mut c_void,
+  pub largepad: *mut QuadPackedData, // Initially NULL, allocated on request
+
+  // --- Hot Path Flags (0-7) ---
+  pub _internal: [u8; 48],
+}
+
+#[repr(C)]
+pub union Packed64 {
+  pub unsigned: u64,
+  pub signed: i64,
+  pub bytes: [u8; 8],
+  pub pt: *mut c_void,
 }
 
 #[rustfmt::skip]
@@ -76,50 +123,38 @@ pub mod OPCODES {
 }
 
 #[repr(C, align(64))]
-pub struct VMContext {
-  // --- Hot Path Flags (0-7) ---
-  pub flags: u32,
-  pub opcode: u32,
-
-  // --- Resources ---
-  pub engine: *const c_void, // this is a pointer to the VM Core Engine, Just for the sake of being
-  pub scratchpad: *mut c_void, // Pointer to a ScratchPad (+16 more variables)
-  pub largepad: *mut c_void, // Pointer to a dynamically requested allocation scratchpad (max. 16KB, 2048 64-bit data)
-
-  // --- State ---
-  pub resume: u64,
-  pub pt: Packed64,
-
-  // --- The Architectural Buffer ---
-  pub _reserved: [u8; 16],
-}
-
-#[repr(C)]
-pub union Packed64 {
-  pub unsigned: u64,
-  pub signed: i64,
-  pub bytes: [u8; 8],
-  pub pt: *mut c_void,
-}
-
-#[repr(C, align(64))]
 pub struct CVMContext {
   pub _unstable: [u8; 64],
 }
 
-const _: () = assert!(align_of::<VMContext>() == 64);
-const _: () = assert!(size_of::<VMContext>() == 64);
+assert_eq!(
+  size_of::<VMTaskState>(),
+  128,
+  "Struct must be exactly 128 bytes"
+);
+assert_eq!(
+  align_of::<VMTaskState>(),
+  64,
+  "Struct must be aligned to CPU cache line"
+);
 
-const _CHECK_REGISTER_SET_SIZE: usize =
-  size_of::<VMTaskState>() - 1 * size_of::<usize>() - size_of::<*mut VMTaskState>();
-pub const REGISTER_SET_SIZE: usize = 6 * size_of::<QuadPackedData>();
+assert_eq!(
+  size_of::<CVMTaskState>(),
+  128,
+  "Struct must be exactly 128 bytes"
+);
+assert_eq!(
+  align_of::<CVMTaskState>(),
+  64,
+  "Struct must be aligned to CPU cache line"
+);
 
-const _OUT: bool = REGISTER_SET_SIZE == _CHECK_REGISTER_SET_SIZE;
-
-const _ONE_CPU_CACHE: bool = size_of::<VMTaskState>() == 64;
-const _ENSURE_ONE_CPU_CACHE: () = assert!(_ONE_CPU_CACHE);
-
-const _ENSURE_VMTASKSTATE_IS_VALID: () = assert!(_OUT);
+// The "Golden Boundary" check
+assert_eq!(
+  offset_of!(VMTaskState, scratchpad),
+  64,
+  "Registers must occupy exactly the first cache line"
+);
 
 unsafe impl Send for VMTaskState {}
 
@@ -163,6 +198,8 @@ macro_rules! instruction {
 // - r4 = 3
 // - r5 = 4
 // - r6 = 5
+// - r7 = 6
+// - r8 = 7
 //
 // # Type tag
 // - 0: u64
@@ -205,10 +242,10 @@ instruction! {
   //  [Src1] [Target1]
   //
   // ## Src1, Target1 has the following value composition
-  // - 1-5: Register r2 through r6 indices
-  // - 7: Small Scratchpad
-  // - 8: Large Scratchpad
-  // - 9: Pointer, pointer read from r2 as 64-bit pointer
+  // - 1-7: Register r2 through r7 indices
+  // - 8: Small Scratchpad
+  // - 9: Large Scratchpad
+  // - 10: Pointer, pointer read from r2 as 64-bit pointer
   //
   // the 32-bit in base src1, base target2 gets treated as +-offset
   01 => vcopy,
@@ -256,10 +293,10 @@ instruction! {
   // `jif <intent id (1bit)> <location src (4-bits)> <padding (2-bits)> <base src1 as i32>`
   //
   // ## Location Src has the following value composition
-  // - 1-5: Register r2 through r6 indices
-  // - 7: Small Scratchpad
-  // - 8: Large Scratchpad
-  // - 9: Pointer, pointer read from r2 as 64-bit pointer
+  // - 1-7: Register r2 through r8 indices
+  // - 8: Small Scratchpad
+  // - 9: Large Scratchpad
+  // - 10: Pointer, pointer read from r2 as 64-bit pointer
   //
   // | Intent ID                | Description                |
   // | ------------------------ | -------------------------- |
@@ -311,10 +348,10 @@ instruction! {
   //  [Src1] [Src2] [Target1] [PADDING]
   //
   // ## Src1, Src2, Target1 has the following value composition
-  // - 1-5: Register r2 through r6 indices
-  // - 7: Small Scratchpad
-  // - 8: Large Scratchpad
-  // - 9: Pointer, pointer read from r2 as 64-bit pointer
+  // - 1-7: Register r2 through r8 indices
+  // - 8: Small Scratchpad
+  // - 9: Large Scratchpad
+  // - 10: Pointer, pointer read from r2 as 64-bit pointer
   //
   // Please note the the target1 is treated as a scalar or vector output following this rubric (from cranelift docs):
   // - When comparing scalars, the result is: - 1 if the condition holds. - 0 if the condition does not hold.
@@ -351,10 +388,10 @@ instruction! {
   // - 1: Get count from r1, the u32 count is treated as expected count (optimization hint)
   //
   // ## Src1, Src2, Target1 has the following value composition
-  // - 1-5: Register r2 through r6 indices
-  // - 7: Small Scratchpad
-  // - 8: Large Scratchpad
-  // - 9: Pointer, pointer read from r2 as 64-bit pointer
+  // - 1-7: Register r2 through r8 indices
+  // - 8: Small Scratchpad
+  // - 9: Large Scratchpad
+  // - 10: Pointer, pointer read from r2 as 64-bit pointer
   //
   // the next 32-bit gets treated as +-offset
   08 => vadd,
@@ -379,10 +416,10 @@ instruction! {
   // - 1: Get count from r1, the u32 count is treated as expected count (optimization hint)
   //
   // ## Src1, Src2, Target1 has the following value composition
-  // - 1-5: Register r2 through r6 indices
-  // - 7: Small Scratchpad
-  // - 8: Large Scratchpad
-  // - 9: Pointer, pointer read from r2 as 64-bit pointer
+  // - 1-7: Register r2 through r8 indices
+  // - 8: Small Scratchpad
+  // - 9: Large Scratchpad
+  // - 10: Pointer, pointer read from r2 as 64-bit pointer
   //
   // the next 32-bit gets treated as +-offset
   09 => vaddf,
@@ -456,10 +493,10 @@ instruction! {
   // Standard integer division emits no flags
   //
   // ## Src1, Src2, Target1 has the following value composition
-  // - 1-5: Register r2 through r6 indices
-  // - 7: Small Scratchpad
-  // - 8: Large Scratchpad
-  // - 9: Pointer, pointer read from r2 as 64-bit pointer
+  // - 1-7: Register r2 through r8 indices
+  // - 8: Small Scratchpad
+  // - 9: Large Scratchpad
+  // - 10: Pointer, pointer read from r2 as 64-bit pointer
   //
   // the next 32-bit gets treated as +-offset
   14 => div,
@@ -472,10 +509,10 @@ instruction! {
   //   [Type tag] [Src1] [Src2] [Target1]
   //
   // ## Src1, Src2, Target1 has the following value composition
-  // - 1-5: Register r2 through r6 indices
-  // - 7: Small Scratchpad
-  // - 8: Large Scratchpad
-  // - 9: Pointer, pointer read from r2 as 64-bit pointer
+  // - 1-7: Register r2 through r8 indices
+  // - 8: Small Scratchpad
+  // - 9: Large Scratchpad
+  // - 10: Pointer, pointer read from r2 as 64-bit pointer
   //
   // the next 32-bit gets treated as +-offset
   15 => rem,
@@ -504,10 +541,10 @@ instruction! {
   // - ireduce
   //
   // ## Src1, Target1 has the following value composition
-  // - 1-5: Register r2 through r6 indices
-  // - 7: Small Scratchpad
-  // - 8: Large Scratchpad
-  // - 9: Pointer, pointer read from r2 as 64-bit pointer
+  // - 1-7: Register r2 through r8 indices
+  // - 8: Small Scratchpad
+  // - 9: Large Scratchpad
+  // - 10: Pointer, pointer read from r2 as 64-bit pointer
   17 => cast,
 
   // True Vectored Negation Operator
@@ -528,10 +565,10 @@ instruction! {
   // - 1: Get count from r1, the u32 count is treated as expected count (optimization hint)
   //
   // ## Src1, Target1 has the following value composition
-  // - 1-5: Register r2 through r6 indices
-  // - 7: Small Scratchpad
-  // - 8: Large Scratchpad
-  // - 9: Pointer, pointer read from r2 as 64-bit pointer
+  // - 1-7: Register r2 through r8 indices
+  // - 8: Small Scratchpad
+  // - 9: Large Scratchpad
+  // - 10: Pointer, pointer read from r2 as 64-bit pointer
   //
   // the next 32-bit gets treated as +-offset
   18 => vneg,
@@ -566,10 +603,10 @@ instruction! {
   // - 1: Get count from r1, the u32 count is treated as expected count (optimization hint)
   //
   // ## Src1, Src2, Target1 has the following value composition
-  // - 1-5: Register r2 through r6 indices
-  // - 7: Small Scratchpad
-  // - 8: Large Scratchpad
-  // - 9: Pointer, pointer read from r2 as 64-bit pointer
+  // - 1-7: Register r2 through r8 indices
+  // - 8: Small Scratchpad
+  // - 9: Large Scratchpad
+  // - 10: Pointer, pointer read from r2 as 64-bit pointer
   //
   // the next 32-bit gets treated as +-offset
 
@@ -611,10 +648,10 @@ instruction! {
   // - 1: rotr (Rotate Right)
   //
   // ## Src1, Src2, Target1 has the following value composition
-  // - 1-5: Register r2 through r6 indices
-  // - 7: Small Scratchpad
-  // - 8: Large Scratchpad
-  // - 9: Pointer, pointer read from r2 as 64-bit pointer
+  // - 1-7: Register r2 through r8 indices
+  // - 8: Small Scratchpad
+  // - 9: Large Scratchpad
+  // - 10: Pointer, pointer read from r2 as 64-bit pointer
   //
   // the next 32-bit gets treated as +-offset
   31 => vrot,
@@ -642,10 +679,10 @@ instruction! {
   // - 1: Get count from r1, the u32 count is treated as expected count (optimization hint)
   //
   // ## Src1, Src2, Target1 has the following value composition
-  // - 1-5: Register r2 through r6 indices
-  // - 7: Small Scratchpad
-  // - 8: Large Scratchpad
-  // - 9: Pointer, pointer read from r2 as 64-bit pointer
+  // - 1-7: Register r2 through r8 indices
+  // - 8: Small Scratchpad
+  // - 9: Large Scratchpad
+  // - 10: Pointer, pointer read from r2 as 64-bit pointer
   //
   // the next 32-bit gets treated as +-offset
 
@@ -668,10 +705,10 @@ instruction! {
   // - 1: Get count from r1, the u32 count is treated as expected count (optimization hint)
   //
   // ## Src1, Target1 has the following value composition
-  // - 1-5: Register r2 through r6 indices
-  // - 7: Small Scratchpad
-  // - 8: Large Scratchpad
-  // - 9: Pointer, pointer read from r2 as 64-bit pointer
+  // - 1-7: Register r2 through r8 indices
+  // - 8: Small Scratchpad
+  // - 9: Large Scratchpad
+  // - 10: Pointer, pointer read from r2 as 64-bit pointer
   //
   // the next 32-bit gets treated as +-offset
   34 => vpopcnt,
@@ -690,10 +727,10 @@ instruction! {
   // - 1: max (Maximum)
   //
   // ## Src1, Src2, Target1 has the following value composition
-  // - 1-5: Register r2 through r6 indices
-  // - 7: Small Scratchpad
-  // - 8: Large Scratchpad
-  // - 9: Pointer, pointer read from r2 as 64-bit pointer
+  // - 1-7: Register r2 through r8 indices
+  // - 8: Small Scratchpad
+  // - 9: Large Scratchpad
+  // - 10: Pointer, pointer read from r2 as 64-bit pointer
   //
   // the next 32-bit gets treated as +-offset
   35 => vminimax,
@@ -712,10 +749,10 @@ instruction! {
   // - 10: Count leading sign bits
   //
   // ## Src1, Target1 has the following value composition
-  // - 1-5: Register r2 through r6 indices
-  // - 7: Small Scratchpad
-  // - 8: Large Scratchpad
-  // - 9: Pointer, pointer read from r2 as 64-bit pointer
+  // - 1-7: Register r2 through r8 indices
+  // - 8: Small Scratchpad
+  // - 9: Large Scratchpad
+  // - 10: Pointer, pointer read from r2 as 64-bit pointer
   //
   // the next 32-bit gets treated as +-offset
   36 => cz,
@@ -741,10 +778,10 @@ instruction! {
   // - 1: Get count from r1, the u32 count is treated as expected count (optimization hint)
   //
   // ## Src1, Src2, Src3, Target1 has the following value composition
-  // - 1-5: Register r2 through r6 indices
-  // - 7: Small Scratchpad
-  // - 8: Large Scratchpad
-  // - 9: Pointer, pointer read from r2 as 64-bit pointer
+  // - 1-7: Register r2 through r8 indices
+  // - 8: Small Scratchpad
+  // - 9: Large Scratchpad
+  // - 10: Pointer, pointer read from r2 as 64-bit pointer
   //
   // the next 32-bit gets treated as +-offset
   37 => vfma,
@@ -833,7 +870,7 @@ instruction! {
   //
   // This returns the old value directly in a register specified in ret
   //
-  // register id 1-6 == r1 through r6
+  // register id 0-7 == r1 through r8
   //
   // # Store
   // Stores a value to the atomic memory region
@@ -853,6 +890,7 @@ instruction! {
   // org = future spec, use zeroes only
   //
   // # Load
+  //
   // Atomically load memory from p1 address
   //
   // ord[3-bit] p1[3-bit] ret[3-bit]
@@ -860,5 +898,34 @@ instruction! {
   // ord = future spec,
   // p1 = register that has the target pointer
   // ret = output register
-  43 => atomic
+  43 => atomic,
+
+  // Scratchpad Management Protocols (Unstable)
+  //
+  // `scratch class[2-bit] [defined]`
+  //
+  // If class is 00, it means to allocate
+  // If class is 10, it means to reallocate
+  // If class is 01, it means to dealloc
+  //
+  // # Allocate
+  // This defines two more fields
+  // `size_reg[4-bits] align_reg[4-bits]`
+  //
+  // Note: Size must be as `u64` and size_reg follows the standard register numbers (defined at top)
+  // Align is also fetched from register mentioned in 4-bits
+  //
+  // - Failing to dealloc this allocated chunk is considered undefined behaviour.
+  // - Allocating another chunk is also considered undefined behaviour.
+  //
+  // # Reallocate
+  //
+  // `old_size_reg[4-bits] new_size_reg[4-bits] align_reg[4-bits]`
+  //
+  // Its similar to allocate
+  //
+  // # Dealloc
+  //
+  // This takes no extra arguments!
+  44 => scratch
 }
