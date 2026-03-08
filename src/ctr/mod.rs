@@ -1,3 +1,4 @@
+use std::mem::offset_of;
 use std::os::raw::c_void;
 
 use crate::structures::QuadPackedData;
@@ -127,34 +128,17 @@ pub struct CVMContext {
   pub _unstable: [u8; 64],
 }
 
-assert_eq!(
-  size_of::<VMTaskState>(),
-  128,
-  "Struct must be exactly 128 bytes"
-);
-assert_eq!(
-  align_of::<VMTaskState>(),
-  64,
-  "Struct must be aligned to CPU cache line"
-);
+const _: () = {
+  assert!(size_of::<VMTaskState>() == 128);
 
-assert_eq!(
-  size_of::<CVMTaskState>(),
-  128,
-  "Struct must be exactly 128 bytes"
-);
-assert_eq!(
-  align_of::<CVMTaskState>(),
-  64,
-  "Struct must be aligned to CPU cache line"
-);
+  assert!(align_of::<VMTaskState>() == 64);
 
-// The "Golden Boundary" check
-assert_eq!(
-  offset_of!(VMTaskState, scratchpad),
-  64,
-  "Registers must occupy exactly the first cache line"
-);
+  assert!(size_of::<CVMTaskState>() == 128);
+  assert!(align_of::<CVMTaskState>() == 64);
+
+  // The "Golden Boundary" check
+  assert!(offset_of!(VMTaskState, scratchpad) == 64);
+};
 
 unsafe impl Send for VMTaskState {}
 
