@@ -1,5 +1,6 @@
+pub mod code;
 pub mod ctr;
 pub mod structures;
-pub mod code;
 
 pub use saffi;
+pub use saffi::salloc;

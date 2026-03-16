@@ -1,12 +1,4 @@
-use crate::ctr::Instruction;
-
-use dashmap::DashMap;
-
-use std::{
-  os::raw::c_void,
-  ptr::null,
-  sync::{Arc, LazyLock},
-};
+use std::{os::raw::c_void, ptr::null};
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -52,14 +44,3 @@ impl QuadPackedData {
 }
 
 pub struct EnforceNoCopy;
-
-/// This `u64` is a packed data
-/// 1st 32=bits (i.e. u32) is module id
-/// 2nd 32=bit (i.e. u32) is module section
-pub type CompiledCode = Arc<
-  DashMap<
-    u64,
-    LazyLock<Box<[Instruction]>, Box<dyn FnOnce() -> Box<[Instruction]>>>,
-    ahash::RandomState,
-  >,
->;

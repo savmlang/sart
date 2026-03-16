@@ -5,9 +5,6 @@ edition = "2024"
 license = "Apache-2.0"
 
 [dependencies]
-ahash = "^0.8"
 pastey = "^0.2"
-
-dashmap = "^6"
 
 saffi = { path = "./saffi/ffi" }
