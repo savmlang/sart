@@ -65,8 +65,9 @@ pub struct VMTaskState {
   // This is interpreter's favourite location to embed data
   // in interpretation mode
   pub engine_or_pt: Packed64,
+  pub icache_or_to_be_defined: Packed64,
 
-  __reserved: [u8; 16],
+  __reserved: [u8; 8],
 }
 
 #[repr(C, align(64))]
@@ -92,6 +93,7 @@ pub struct CVMTaskState {
 pub union Packed64 {
   pub unsigned: u64,
   pub signed: i64,
+  pub usi: usize,
   pub bytes: [u8; 8],
   pub pt: *mut c_void,
 }
@@ -369,11 +371,15 @@ instruction! {
   // `vadd <flags as u32 [4 bytes]> <count in u32> <base src1 as i32> <base src2 as i32> <base target1 as i32>`
   //
   // Flags are like this:
-  //   [<type tag (3 bits)> <count bit>] [Src1 (4-bits)] [Src2 (4-bits)] [Target1 (4-bits)] [<Carry/Sigflow bit>] [<saturation bit>] [Padding]
+  //   [<type tag (3 bits)> <count bit>] [Src1 (4-bits)] [Src2 (4-bits)] [Target1 (4-bits)] [<Carry/Sigflow bit>] [<saturation bit>] [<aligned bit>] [Padding]
   //
   // # Carry/Sigflow bit
   // - 0: Does not emit carry or other flags
   // - 1: Transforms into ADC, r5 is treated as carry bit and it sets overflow in r5, please note this needs count=1 exactly
+  //
+  // # Aligned BIT
+  // If set to `1` it signals the JIT compiler to assume alignment. `UNSAFE`: If unsure, it can lead to Heisenbergs that we currently don't check at the interpreter
+  // stage. So set, only if sure
   //
   // # If Saturation bit is `1`, we use saturating ADD. Example below:
   // i8: 120 + 30 = 127
@@ -658,10 +664,10 @@ instruction! {
   //   [Width (2-bits)] [Padding (2-bits)] [Src1] [Src2] [Target1]
   //
   // # Width bits
-  // - 00: u8
-  // - 01: u16
-  // - 10: u32
-  // - 11:
+  // - 00: u64
+  // - 01: u32
+  // - 10: u16
+  // - 11: u8
   //
   // # Op
   // - 0: and (x & y)
@@ -674,6 +680,9 @@ instruction! {
   // - 7: bitrev (src2 is ignored) [SCALAR ONLY; LOOP EMITTED FOR COUNT > 1]
   // - 8: bswap (src2 is ignored) [SCALAR ONLY; LOOP EMITTED FOR COUNT > 1]
   //
+  // # src2 rules
+  // To protect the integrity, for situations where src2 is ignored, it (spoiler!) it is
+  // indeed READ OUT! Hence, set src2=src1
   //
   // # Count bit
   // - 0: Treat the next as absolute
@@ -692,7 +701,7 @@ instruction! {
   //
   // These are SIMD Acceleratable
   // ## Syntax
-  // `vrot <flags as u16> <padding (7-bits)> <rotation bit (1-bit)> <count in u32> <base src1 as i32> <amount src i.e. src2 as i32> <base target1 as i32>`
+  // `vrot <flags as u16> <padding (6-bits)> <rotation bit (1-bit)> <count bit (1-bit)> <count in u32> <base src1 as i32> <amount src i.e. src2 as i32> <base target1 as i32>`
   //
   // # Type tag is defined above
   // The flags is split like this into (4-bits + 3 x 4-bit parts):
@@ -764,7 +773,13 @@ instruction! {
   // `vcnt <flags as u16 [2 bytes]> <count in u32> <base src1 as i32> <base target1 as i32>`
   //
   // Flags are like this:
-  //   [<type tag (4 bits)> <count bit>] [Src1 (4-bits)] [Target1 (4-bits)] [Op (4-bits)]
+  //   [<width (2 bits)> <count bit>] [Src1 (4-bits)] [Target1 (4-bits)] [Op (4-bits)]
+  //
+  // # Width
+  // - 0: 64-bits
+  // - 1: 32-bits
+  // - 2: 16-bits
+  // - 3: 8-bits
   //
   // # Count bit
   // - 0: Treat the next as absolute
