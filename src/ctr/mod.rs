@@ -257,7 +257,7 @@ instruction! {
   // Little-Endian Standard
   03 => reg,
   // This is bytecode resolver guidance
-  // The mark is followed by a 64-bit data
+  // The mark is followed by a 64-bit id
   //
   // It is assumed Little-Endian but has no significant interpretation
   //
@@ -268,7 +268,7 @@ instruction! {
 
   // Control Flow Arguments
   //
-  // These take a fictious 64-bit data as argument defined before/after by `mark`
+  // These take a 64 bit jump target
   //
   // `jmp 0xFFFFFFFFFFFFFFFF`
   // `jz 0xFFFFFFFFFFFFFFFF`
@@ -603,6 +603,7 @@ instruction! {
   // - 1: floor
   // - 2: trunc
   // - 3: nearest
+  // - 4: sqrt
   //
   // # Count bit
   // - 0: Treat the next as absolute
@@ -803,7 +804,7 @@ instruction! {
   //
   // These are SIMD Acceleratable
   // ## Syntax
-  // `vminimax <flags as u16> <padding (7-bits)> <Max (1-bit)> <count in u32> <base src1 as i32> <base src2 as i32> <base target1 as i32>`
+  // `vminimax <flags as u16> <padding (5-bits)> <aligned (1-bit)> <count bit (1-bit)> <Max (1-bit)> <count in u32> <base src1 as i32> <base src2 as i32> <base target1 as i32>`
   //
   // # Type tag is defined above
   // The flags is split like this into (4-bits + 3 x 4-bit parts):
@@ -828,13 +829,13 @@ instruction! {
   // highest SIMD level supported
   //
   // ## Syntax
-  // `vfma [<flags as u20> <padding [4bits]> i.e. single u24 in LE] <count in u32> <base src1 as i32> <base src2 as i32> <base src3 as i32> <base target1 as i32>`
+  // `vfma <flags as u16> <padding [6bits]> <float type> <count bit> <count in u32> <base src1 as i32> <base src2 as i32> <base src3 as i32> <base target1 as i32>`
   //
-  // The carry is stored exactly how `cmp` stores it, you can jif for overflow (and select your type, unsigned or unsigned) to get the carry bit
+  // vfma is fused version of (src1*src2 + src3)
   //
   // # Type tag is defined above
   // The flags is split like this into (4-bits + 4 x 4-bit parts):
-  //   [00 <float type> <count bit>] [Src1] [Src2] [Src3] [Target1]
+  //   [Src1] [Src2] [Src3] [Target1]
   //
   // <float type>: 0 = f64, 1 = f32
   //
@@ -922,9 +923,12 @@ instruction! {
   // Atomic Instruction Family
   //
   // Please note the Atomics ONLY apply to pointers and numbers, hence types
-  // are given as follows. Also, since these are atomics, we only allow registers
+  // are given as follows. Also, since these are atomics, they depend on pointers
+  // hence registers cannot be atomic
   //
-  // [Sub Opcode (2-bits)] [type (4-bit)] [ordering (3-bits)] [padding (7-bits)] [instruction defined (16-bit)]
+  // Natural alignment is forced
+  //
+  // [Sub Opcode (2-bits)] [type (3-bit)] [ordering (3-bits)] [offset v0 (i8)] [offset v1 (i8)] [offset v2 (i8)] [offset v3 (i8)] [instruction defined (16-bit)]
   //
   // # ordering
   // 0: SeqCst
@@ -948,43 +952,43 @@ instruction! {
   // # CAS
   // CAS stands for `Compare-And-Swap`
   // Here is the instruction defined space
-  // ord[3-bit] p1[3-bit] e[3-bit] x[3-bit] ret[3-bit]
+  // ret[4-bit] e[4-bit] x[4-bit] p1[4-bit]
   //
-  // ord = future spec, prefer zeroes only
-  // p1 = pointer (64-bit must)
-  // e = Expected value
-  // x = Value to be stored
+  // ret (v3) = Return location [Allocate 2x the type width; 1st stores the fetched output, 2nd stores a boolean (all ones for true, zeroes for false)]
+  // e (v2) = Expected value (in the expected type)
+  // x (v1) = Value to be stored (in the type)
+  // p1 (v0) = Location that contains pointer (read as usize, assume u64 for cross-compatibility)
   //
-  // This returns the old value directly in a register specified in ret
-  //
-  // register id 0-7 == r1 through r8
+  // Atomic Ordering specified above is for SUCCESS case
+  // For FAILURE, we look at r8 for atomic ordering, so please ensure it is correct [read as u8 i.e. bits 0to7]
   //
   // # Store
   // Stores a value to the atomic memory region
   //
   // Instruction defined space
-  // ord[3-bits] p1[3-bit] x[3-bit]
+  // [Padding (8-bits)] x[4-bit] p1[4-bit]
   //
-  // ord = future spec, use zeroes only
-  // p1 = pointer (64-bit must)
-  // x = Value to be stored
+  // p1 (v0) = Location that contains pointer (read as u64, assume u64 for cross-compatibility)
+  // x (v1) = Location that defines the value to be stored
   //
   // # RMW
   // Atomically read-modify-write
   //
-  // ord[3-bit] op[4-bit] p1[3-bit] o[3-bit] ret[3-bit]
+  // op[4-bit] o[4-bit] ret[4-bit] p1[4-bit]
   //
-  // org = future spec, use zeroes only
+  // v3 is IGNORED
+  // o (v2) = Location to the operand
+  // ret (v1) = Location to where the value be returned (ret==o is legal)
+  // p1 (v0) = Location that contains pointer (read as u64, assume u64 for cross-compatibility)
   //
   // # Load
   //
   // Atomically load memory from p1 address
   //
-  // ord[3-bit] p1[3-bit] ret[3-bit]
+  // [Padding] ret[4-bit] p1[4-bit]
   //
-  // ord = future spec,
-  // p1 = register that has the target pointer
-  // ret = output register
+  // p1 (v0) = Location that contains pointer (read as u64, assume u64 for cross-compatibility)
+  // ret (v1) = Location to where to store
   32 => atomic,
 
   // Scratchpad Management Protocols
