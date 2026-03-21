@@ -65,9 +65,8 @@ pub struct VMTaskState {
   // This is interpreter's favourite location to embed data
   // in interpretation mode
   pub engine_or_pt: Packed64,
-  pub icache_or_to_be_defined: Packed64,
 
-  __reserved: [u8; 8],
+  __reserved: [u8; 16],
 }
 
 #[repr(C, align(64))]
@@ -245,6 +244,7 @@ instruction! {
   // - if source register id == target register id, the src register id is written with its own POINTER
   // - if source register id == target register id == 12 (which is an invalid register id), the register r1 is written with the pointer to current scratchpad
   // - if source register id == target register id == 13 (which is an invalid register id), the register r1 is written with the pointer to current largepad
+  // - if source register id == target register id == 14 (which is an invalid register id), the register r1 is written with the pointer to the GLOBAL RW DATA
   //
   // `mov <source register id (4bits)> <target register id (4bits)>`
   02 => mov,
