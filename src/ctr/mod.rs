@@ -271,8 +271,6 @@ instruction! {
   // These take a 64 bit jump target
   //
   // `jmp 0xFFFFFFFFFFFFFFFF`
-  // `jz 0xFFFFFFFFFFFFFFFF`
-  // `jnz 0xFFFFFFFFFFFFFFFF`
   05 => jmp,
   // Jump-IF
   //
@@ -308,10 +306,10 @@ instruction! {
   // - 1: Get count from r1, the next 32-bits treated as expected count (optimization hint)
   //
   // # Width Tag
-  // - 00: 8-bit
-  // - 01: 16-bit
-  // - 10: 32-bit
-  // - 11: 64-bit
+  // - 00: 64-bit
+  // - 01: 32-bit
+  // - 10: 16-bit
+  // - 11: 8-bit
   //
   // | Operation                | Description                   |
   // | ------------------------ | ----------------------------- |
