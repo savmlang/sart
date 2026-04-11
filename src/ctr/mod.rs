@@ -65,8 +65,8 @@ pub struct VMTaskState {
   // This is interpreter's favourite location to embed data
   // in interpretation mode
   pub engine_or_pt: Packed64,
-
-  __reserved: [u8; 16],
+  // Stored the second part of FutureTask
+  pub extra: Packed64,
 }
 
 #[repr(C, align(64))]
@@ -215,9 +215,9 @@ instruction! {
   // - 1: Get count from r1, the next 32-bits treated as expected count (optimization hint)
   //
   // # Memory Flags
-  // [alignment data (2-bits)] # for source 1
-  // [alignment data (2-bits)] # for source 2
   // [padding]
+  // [alignment data (2-bits)] [non overlapping (1-bit)] # for source 1
+  // [alignment data (2-bits)] [non overlapping (1-bit)] # for source 2
   //
   // ## Alignment Data
   // 00: Unknown (Assumes unaligned; goes to max unaligned allowed)
@@ -240,11 +240,11 @@ instruction! {
   01 => vcopy,
   // Move data between registers
   //
+  // [Source reg id (4-bits)] [Target reg id (4-bits)]
+  //
   // The MOV method has a few powerful features:
-  // - if source register id == target register id, the src register id is written with its own POINTER
-  // - if source register id == target register id == 12 (which is an invalid register id), the register r1 is written with the pointer to current scratchpad
-  // - if source register id == target register id == 13 (which is an invalid register id), the register r1 is written with the pointer to current largepad
-  // - if source register id == target register id == 14 (which is an invalid register id), the register r1 is written with the pointer to the GLOBAL RW DATA
+  // - if source register id == target register id == 12 (which is an invalid register id), the register r1 is written with the pointer to current largepad
+  // - if source register id == target register id == 13 (which is an invalid register id), the register r1 is written with the pointer to the GLOBAL RW DATA
   //
   // `mov <source register id (4bits)> <target register id (4bits)>`
   02 => mov,

@@ -34,11 +34,13 @@ pub enum CallSig {
   ///
   /// it is defined always as
   /// ```rust
-  ///   extern "C" (*mut sart::ctr::CVMTaskState) -> saffi::futures::FutureTask<u64>
+  ///   extern "C" (*mut sart::ctr::CVMTaskState, *mut saffi::futures::FutureTask<u64>) -> ()
   /// ```
   ///
   /// ## STANDARD SaFFI Out Conv
   /// The low 64-bit bits is copied to r7
+  ///
+  /// ##
   SaFFIAsyncQ(
     /// Helps JIT do speculative cleaning
     UnsafeSaFFIProfile,
@@ -51,7 +53,7 @@ pub enum CallSig {
   ///
   /// it is defined always as
   /// ```rust
-  ///   extern "C" (*mut sart::ctr::CVMTaskState) -> saffi::futures::FutureTask<[u64; 2]>
+  ///   extern "C" (*mut sart::ctr::CVMTaskState, *mut saffi::futures::FutureTask<[u64; 2]>) -> ()
   /// ```
   ///
   /// ## STANDARD SaFFI Out Conv
