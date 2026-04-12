@@ -299,11 +299,7 @@ instruction! {
   // CMP Operation
   //
   // ## Syntax
-  // `vcmp <count tag (1-bit)> <width tag (2-bits)> <operation (5-bit)> <src flags as u16> <count in u32> <base src1 as i32> <base src2 as i32> <base target3 as i32>`
-  //
-  // # Count tag
-  // - 0: Treat the next as absolute
-  // - 1: Get count from r1, the next 32-bits treated as expected count (optimization hint)
+  // `vcmp <width tag (3-bits)> <operation (5-bit)> <src flags as u16> <count in u32> <base src1 as i32> <base src2 as i32> <base target3 as i32>`
   //
   // # Width Tag
   // - 00: 64-bit
@@ -352,8 +348,9 @@ instruction! {
   // - 10: Pointer, pointer read from r2 as 64-bit pointer
   //
   // Please note the the target1 is treated as a scalar or vector output following this rubric (from cranelift docs):
-  // - When comparing scalars, the result is: - 1 if the condition holds. - 0 if the condition does not hold.
-  // - When comparing vectors, the result is: - -1 (i.e. all ones) in each lane where the condition holds. - 0 in each lane where the condition does not hold.
+  // - When comparing scalars or vectors, the result is: 0 if the condition does not hold and non zero otherwise
+  //
+  // The non-zero output is not defined.
   //
   // the next 32-bit gets treated as +-offset
   07 => vcmp,
@@ -369,7 +366,7 @@ instruction! {
   // `vadd <flags as u32 [4 bytes]> <count in u32> <base src1 as i32> <base src2 as i32> <base target1 as i32>`
   //
   // Flags are like this:
-  //   [<type tag (3 bits)> <count bit>] [Src1 (4-bits)] [Src2 (4-bits)] [Target1 (4-bits)] [<Carry/Sigflow bit>] [<saturation bit>] [<aligned bit>] [Padding]
+  //   [type tag (4 bits)] [Src1 (4-bits)] [Src2 (4-bits)] [Target1 (4-bits)] [<Carry/Sigflow bit>] [<saturation bit>] [<aligned bit>] [Padding]
   //
   // # Carry/Sigflow bit
   // - 0: Does not emit carry or other flags
@@ -384,10 +381,6 @@ instruction! {
   // u8: 250 + 30 = 255
   //
   // (We automatically handle SIMD vs NON-SIMD saturating issues)
-  //
-  // # Count bit
-  // - 0: Treat the next as absolute
-  // - 1: Get count from r1, the u32 count is treated as expected count (optimization hint)
   //
   // ## Src1, Src2, Target1 has the following value composition
   // - 1-7: Register r2 through r8 indices
@@ -409,14 +402,10 @@ instruction! {
   //
   // # Type tag is defined above
   // The flags is split like this into (4-bits + 3 x 4-bit parts):
-  //   [0 <inst defined> <float type> <count bit>] [Src1] [Src2] [Target1]
+  //   [00 <inst defined> <float type>] [Src1] [Src2] [Target1]
   //
   // <float type>: 0 = f64, 1 = f32
   // <inst defined> = No definition
-  //
-  // # Count bit
-  // - 0: Treat the next as absolute
-  // - 1: Get count from r1, the u32 count is treated as expected count (optimization hint)
   //
   // ## Src1, Src2, Target1 has the following value composition
   // - 1-7: Register r2 through r8 indices
@@ -463,7 +452,7 @@ instruction! {
   // The layout is similar and idompotent to `vadd` with the below difference
   //
   // Flags are like this:
-  //   [<type tag (3 bits)> <count bit>] [Src1 (4-bits)] [Src2 (4-bits)] [Target1 (4-bits)] [<Extended Flags (2 bits)>] [Padding]
+  //   [<type tag (4 bits)>] [Src1 (4-bits)] [Src2 (4-bits)] [Target1 (4-bits)] [<Extended Flags (2 bits)>] [Padding]
   //
   // The extended flags:
   // - x0: Output the 1st 32-bits (i.e. low bits)
@@ -557,13 +546,10 @@ instruction! {
   // `vneg <flags as u16 [2 bytes]> <count in u32> <base src1 as i32> <base target1 as i32>`
   //
   // Flags are like this:
-  //   <type tag (4 bits)> [Src1 (4-bits)] [Target1 (4-bits)] <count bit> [Padding (3bits)]
+  //   <type tag (4 bits)> [Src1 (4-bits)] [Target1 (4-bits)] [Padding (4bits)]
   //
   // Please note that this is defined only for `i*` types and `f*` types. neg of iN::MIN is undefined
-  //
-  // # Count bit
-  // - 0: Treat the next as absolute
-  // - 1: Get count from r1, the u32 count is treated as expected count (optimization hint)
+  // Using types other than `i*` and `f*` is undefined and may panic even
   //
   // ## Src1, Target1 has the following value composition
   // - 1-7: Register r2 through r8 indices
@@ -575,6 +561,8 @@ instruction! {
   18 => vneg,
   // Similar to `vneg` in terms of syntax.
   // Does the abs(x) operation
+  //
+  // Using types other than `i*` and `f*` is undefined and may panic even
   //
   // Only defined for `i*` and `f*` types, abs(iN::MIN) is not defined
   19 => vabs,
@@ -827,7 +815,16 @@ instruction! {
   // highest SIMD level supported
   //
   // ## Syntax
-  // `vfma <flags as u16> <padding [6bits]> <float type> <count bit> <count in u32> <base src1 as i32> <base src2 as i32> <base src3 as i32> <base target1 as i32>`
+  // `vfma <flags as u16> <MemFlags [8bits]> <count in u32> <base src1 as i32> <base src2 as i32> <base src3 as i32> <base target1 as i32>`
+  //
+  // # MemFlags
+  // [@Alignment [future spec] (7-bit)] [float type (1-bit)]
+  // Alignmemt : = Alignment(3*3*3*3) * Float (2)
+  //
+  // Alignment is expressed via Mixed-Radix system (please look at our MRX Technology our specsheet)
+  // 4containers each expressing 3 states
+  // (max: 81)
+  // Any other value outside of radix is considered unaligned
   //
   // vfma is fused version of (src1*src2 + src3)
   //
@@ -837,9 +834,10 @@ instruction! {
   //
   // <float type>: 0 = f64, 1 = f32
   //
-  // # Count bit
-  // - 0: Treat the next as absolute
-  // - 1: Get count from r1, the u32 count is treated as expected count (optimization hint)
+  // ## Alignment
+  // - 0: 16B alignment
+  // - 1: 32B alignment
+  // - 2: 64B alignment
   //
   // ## Src1, Src2, Src3, Target1 has the following value composition
   // - 1-7: Register r2 through r8 indices
