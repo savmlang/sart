@@ -9,7 +9,3 @@ pastey = "^0.2"
 serde = { version = "^1", features = ["derive"] }
 
 saffi = { path = "./saffi/ffi" }
-
-[profile.release]
-lto = false
-codegen-units = 16
