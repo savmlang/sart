@@ -5,6 +5,10 @@ use crate::structures::QuadPackedData;
 
 pub type DispatchFn = extern "C" fn(*mut CVMTaskState);
 
+pub mod ame;
+
+pub use ame::*;
+
 /// If the pointer goes NULL
 /// You must use the 1st unsigned integer to get the module
 /// The second integer represents the `.text` block
@@ -47,6 +51,11 @@ pub struct VMTaskState {
   #[cfg(target_pointer_width = "32")]
   _2: [u8; 4],
 
+  // SaVM Aggressive Matrix Extension Registers
+  //
+  // Used by Interpreter and Tier 1 JIT
+  pub ame: *mut AggressiveMatrixExtension,
+
   // --- Hot Path Flags (0-7) ---
   pub flags: u32,
   pub opcode: u32,
@@ -67,6 +76,8 @@ pub struct VMTaskState {
   pub engine_or_pt: Packed64,
   // Stored the second part of FutureTask
   pub extra: Packed64,
+
+  _padding: [u8; 8],
 }
 
 #[repr(C, align(64))]
@@ -642,7 +653,7 @@ instruction! {
   // highest SIMD level supported
   //
   // ## Syntax
-  // `vb* <flags as u16> <Op (4-bits)> <padding (3-bits)> <count bit (1-bit)> <count in u32> <base src1 as i32> <base src2 as i32> <base target1 as i32>`
+  // `vb* <flags as u16> <Op (4-bits)> <padding (4-bits)> <count in u32> <base src1 as i32> <base src2 as i32> <base target1 as i32>`
   //
   // The carry is stored exactly how `cmp` stores it, you can jif for overflow (and select your type, unsigned or unsigned) to get the carry bit
   //
@@ -688,7 +699,7 @@ instruction! {
   //
   // These are SIMD Acceleratable
   // ## Syntax
-  // `vrot <flags as u16> <padding (6-bits)> <rotation bit (1-bit)> <count bit (1-bit)> <count in u32> <base src1 as i32> <amount src i.e. src2 as i32> <base target1 as i32>`
+  // `vrot <flags as u16> <padding (7-bits)> <rotation bit (1-bit)> <count in u32> <base src1 as i32> <amount src i.e. src2 as i32> <base target1 as i32>`
   //
   // # Type tag is defined above
   // The flags is split like this into (4-bits + 3 x 4-bit parts):
