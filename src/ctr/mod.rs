@@ -51,31 +51,33 @@ pub struct VMTaskState {
   #[cfg(target_pointer_width = "32")]
   _2: [u8; 4],
 
-  // SaVM Aggressive Matrix Extension Registers
-  //
-  // Used by Interpreter and Tier 1 JIT
+  /// SaVM Aggressive Matrix Extension Registers
+  ///
+  /// Used by Interpreter and Tier 1 JIT
   pub ame: *mut AggressiveMatrixExtension,
 
   // --- Hot Path Flags (0-7) ---
   pub flags: u32,
   pub opcode: u32,
 
-  // Instruction pointer in bytecode.
-  // Resume data for JIT under JIT-Code
-  //
-  // Please also note that, under JIT, it is used very differently
+  /// Instruction pointer in bytecode.
+  /// Resume data for JIT under JIT-Code
+  ///
+  /// Please also note that, under JIT, it is used very differently
   pub curline_or_resume: Packed64,
-  // This stores the pointer to the engine
-  // But during cooperative async, this is replaced with the pointer of
-  // of the AsyncTask (for FFI created async)
-  //
-  // or, NULL for bytecode defined async
-  //
-  // This is interpreter's favourite location to embed data
-  // in interpretation mode
+  /// This stores the pointer to the engine
+  /// But during cooperative async, this is replaced with the pointer of
+  /// of the AsyncTask (for FFI created async; pt)
+  ///
+  /// or, NULL for bytecode defined async
+  ///
+  /// This is interpreter's favourite location to embed data
+  /// in interpretation mode
   pub engine_or_pt: Packed64,
-  // Stored the second part of FutureTask
-  pub extra: Packed64,
+  /// Generally stores the pointer to WorkingState Structure
+  ///
+  /// Use 2: Stores the second part of FutureTask (pt2)
+  pub ws_or_pt2: Packed64,
 
   _padding: [u8; 8],
 }
@@ -219,22 +221,23 @@ instruction! {
   // Please note that this can (and does) also act as `load` operation
   //
   // ## Syntax
-  // `vcopy <count tag (1-bit)> <memory flags [future spec] (7bits)> <src flags as u8> <count in u32> <base src1 as i32> <base target2 as i32>`
+  // `vcopy <count tag (1-bit)> <memory flags (7bits)> <src flags as u8> <count in u32> <base src1 as i32> <base target2 as i32>`
   //
   // # Count tag
   // - 0: Treat the next as absolute
-  // - 1: Get count from r1, the next 32-bits treated as expected count (optimization hint)
+  // - 1: Get count from r1 [Triggers massive stackload on JIT dispatch]
   //
   // # Memory Flags
-  // [padding]
-  // [alignment data (2-bits)] [non overlapping (1-bit)] # for source 1
-  // [alignment data (2-bits)] [non overlapping (1-bit)] # for source 2
+  // bits 5..7 [padding (2-bits)]
+  // bits 4..5 [non overlapping (1-bit)] # Ensures that src, target dont overlap
+  // bits 2..4 [alignment data (2-bits)] # for source
+  // bits 0..2 [alignment data (2-bits)] # for target
   //
   // ## Alignment Data
-  // 00: Unknown (Assumes unaligned; goes to max unaligned allowed)
-  // 01: 16-bytes (Goes to max AVX)
-  // 10: 32-bytes (Goes to max AVX2)
-  // 11: 64-bytes (Goes to max AVX512)
+  // 00: Unknown (Assumes unaligned)
+  // 01: 16-bytes (Allows ALIGNED AVX)
+  // 10: 32-bytes (Allows ALIGNED AVX2)
+  // 11: 64-bytes (Allows ALIGNED AVX512)
   //
   // Count is taken as number of entities (vcopy implicitly assumes entity = bytes)
   //
@@ -249,6 +252,7 @@ instruction! {
   //
   // the 32-bit in base src1, base target2 gets treated as +-offset
   01 => vcopy,
+
   // Move data between registers
   //
   // [Source reg id (4-bits)] [Target reg id (4-bits)]
@@ -529,7 +533,17 @@ instruction! {
   16 => vdivf,
   // Casting types operation
   //
-  // `cast <flags as u16> <base src1 as i32> <base target1 as i32>`
+  // `cast <flags as u16> <padding> <alignment (4-bits)> <base src1 as i16> <base target1 as i16>`
+  //
+  // # Alignment Flags
+  // [alignment data (2-bits)] # for source
+  // [alignment data (2-bits)] # for target
+  //
+  // ## Alignment Data
+  // 00: Unknown (Assumes unaligned)
+  // 01: 16-bytes (Allows ALIGNED AVX)
+  // 10: 32-bytes (Allows ALIGNED AVX2)
+  // 11: 64-bytes (Allows ALIGNED AVX512)
   //
   // The 16-bit args are distributed as follows (4x4-bit slices):
   //   [Type tag Initial] [Type tag Final] [Src1] [Target1]
@@ -540,6 +554,14 @@ instruction! {
   // - ireduce
   // - fdemote
   // - fpromote
+  // - fcvt_to_sint_sat
+  // - fcvt_to_uint_sat
+  //
+  // Since floats to integer (saturating) and integer to float
+  // is vectorizable we have `vfcast` for that
+  //
+  // Both cast and vfcast on floats have same behaviour for floats to integer
+  // and vice versa
   //
   // ## Src1, Target1 has the following value composition
   // - 1-7: Register r2 through r8 indices
@@ -587,7 +609,7 @@ instruction! {
   // `vfop <flags as u16 [2 bytes]> <count in u32> <base src1 as i32> <base target1 as i32>`
   //
   // Flags are like this:
-  //   [padding (3-bits)] [float type (1 bit)] [Src1 (4-bits)] [Target1 (4-bits)] [count bit (1-bit)] [Sub-Op (3-bit)]
+  //   [padding (4-bits)] [Src1 (4-bits)] [Target1 (4-bits)] [float type (1 bit)] [Sub-Op (3-bit)]
   //
   // ## Float Type
   // - 0: f64
@@ -624,19 +646,15 @@ instruction! {
   // `vfcast <flags as u16 [2 bytes]> <count in u32> <base src1 as i32> <base target1 as i32>`
   //
   // Flags are like this:
-  //   [Padding] [count bit (1-bit)] [op (1-bit)] [f width (1-bit)] [int type tag (3 bits)] [Src1 (4-bits)] [Target1 (4-bits)]
+  //   [Padding] [op (1-bit)] [f width (1-bit)] [int type tag (3 bits)] [Src (4-bits)] [Target (4-bits)]
   //
   // f width: 0 -> f64, 1 -> f32
   //
   // int type tag: well, obvious
   //
-  // # Count bit
-  // - 0: Treat the next as absolute
-  // - 1: Get count from r1, the u32 count is treated as expected count (optimization hint)
-  //
   // # Op Bit
-  // - 0: Convert the float in src1 into the integer type specific in target1
-  // - 1: Convert the integer in src1 into float of target1
+  // - 0: float -> int (src = float, target = int)
+  // - 1: int -> float (src = int, target = float)
   //
   // ## Src1, Target1 has the following value composition
   // - 1-7: Register r2 through r8 indices
@@ -730,11 +748,11 @@ instruction! {
   //
   // These are SIMD Acceleratable
   // ## Syntax
-  // `vsh <flags as u16> <padding (6-bits)> <op bit (1-bit)> <count bit (1-bit)> <count in u32> <base src1 as i32> <amount i.e. src2 as i32> <base target1 as i32>`
+  // `vsh <flags as u16> <count in u32> <base src1 as i8> <amount i.e. src2 as i8> <base target1 as i8>`
   //
   // # Type tag is defined above
   // The flags is split like this into (4-bits + 3 x 4-bit parts):
-  //   [Type Tag (4-bits)] [Src1] [Src2] [Target1]
+  //   [Type Tag (3-bits)] [Op Bit (1-bit)] [Src1] [Src2] [Target1]
   //
   // Floating types are not supported!
   // Src2 i.e. amount to shift by is a scalar not a vector!!! Also, it is to be the UNSIGNED variant of the bit.
@@ -743,10 +761,6 @@ instruction! {
   // - for `shl` of u64 types, you need to pass Src2 as 1 single u64 no matter the count
   //
   // All the lanes are equally bit-shifted
-  //
-  // # Count bit
-  // - 0: Treat the next as absolute
-  // - 1: Get count from r1, the u32 count is treated as expected count (optimization hint)
   //
   // # Op bit
   // - 0: SHL
@@ -758,7 +772,7 @@ instruction! {
   // - 9: Large Scratchpad
   // - 10: Pointer, pointer read from r2 as 64-bit pointer
   //
-  // the next 32-bit gets treated as +-offset
+  // the next 8-bit gets treated as +-offset in terms of COUNT
 
   24 => vsh,
 
@@ -768,10 +782,10 @@ instruction! {
   // Others are converted to a scalar loop
   //
   // ## Syntax
-  // `vcnt <flags as u16 [2 bytes]> <count in u32> <base src1 as i32> <base target1 as i32>`
+  // `vcnt <flags as u16 [2 bytes]> <padding (4bits)> <alignment (4-bits)> <count in u32> <base src1 as u8> <base target1 as u8>`
   //
   // Flags are like this:
-  //   [<width (2 bits)> <count bit>] [Src1 (4-bits)] [Target1 (4-bits)] [Op (4-bits)]
+  //   <padding> <width (2 bits)> [Src1 (4-bits)] [Target1 (4-bits)] [Op (4-bits)]
   //
   // # Width
   // - 0: 64-bits
@@ -779,9 +793,15 @@ instruction! {
   // - 2: 16-bits
   // - 3: 8-bits
   //
-  // # Count bit
-  // - 0: Treat the next as absolute
-  // - 1: Get count from r1, the u32 count is treated as expected count (optimization hint)
+  // # Alignment Flags
+  // [alignment data (2-bits)] # for source
+  // [alignment data (2-bits)] # for target
+  //
+  // ## Alignment Data
+  // 00: Unknown (Assumes unaligned)
+  // 01: 16-bytes (Allows ALIGNED AVX)
+  // 10: 32-bytes (Allows ALIGNED AVX2)
+  // 11: 64-bytes (Allows ALIGNED AVX512)
   //
   // # Op
   // - 0: POPCNT (Population Count)
@@ -801,11 +821,22 @@ instruction! {
   //
   // These are SIMD Acceleratable
   // ## Syntax
-  // `vminimax <flags as u16> <padding (5-bits)> <aligned (1-bit)> <count bit (1-bit)> <Max (1-bit)> <count in u32> <base src1 as i32> <base src2 as i32> <base target1 as i32>`
+  // `vminimax <flags as u16> <padding (1bit)> <Alignment Flags (6-bit)> <Max (1-bit)> <count in u32> <base src1 as u8> <base src2 as u8> <base target1 as u8>`
   //
   // # Type tag is defined above
   // The flags is split like this into (4-bits + 3 x 4-bit parts):
   //   [Type Tag (4-bits)] [Src1] [Src2] [Target1]
+  //
+  // # Alignment Flags
+  // [alignment data (2-bits)] # for source 1
+  // [alignment data (2-bits)] # for source 2
+  // [alignment data (2-bits)] # for target
+  //
+  // ## Alignment Data
+  // 00: Unknown (Assumes unaligned)
+  // 01: 16-bytes (Allows ALIGNED AVX)
+  // 10: 32-bytes (Allows ALIGNED AVX2)
+  // 11: 64-bytes (Allows ALIGNED AVX512)
   //
   // # Max bit
   // - 0: min (Minimum)
@@ -817,7 +848,7 @@ instruction! {
   // - 9: Large Scratchpad
   // - 10: Pointer, pointer read from r2 as 64-bit pointer
   //
-  // the next 32-bit gets treated as +-offset
+  // the next 32-bit gets treated as +-offset in COUNT
   26 => vminimax,
 
   // True Vectored Floating Fused-Multiply-Add Operator
@@ -829,7 +860,7 @@ instruction! {
   // `vfma <flags as u16> <MemFlags [8bits]> <count in u32> <base src1 as i32> <base src2 as i32> <base src3 as i32> <base target1 as i32>`
   //
   // # MemFlags
-  // [@Alignment [future spec] (7-bit)] [float type (1-bit)]
+  // [@Alignment (7-bit)] [float type (1-bit)]
   // Alignmemt : = Alignment(3*3*3*3) * Float (2)
   //
   // Alignment is expressed via Mixed-Radix system (please look at our MRX Technology our specsheet)
@@ -935,14 +966,16 @@ instruction! {
   //
   // Natural alignment is forced
   //
-  // [Sub Opcode (2-bits)] [type (3-bit)] [ordering (3-bits)] [offset v0 (i8)] [offset v1 (i8)] [offset v2 (i8)] [offset v3 (i8)] [instruction defined (16-bit)]
+  // [Sub Opcode (2-bits)] [type (3-bit)] [ordering (3-bits)] [ordering2 (3-bits)] [offset v0 (u8)] [offset v1 (u8)] [offset v2 (u8)] [offset v3 (u8)] [instruction defined (16-bit)]
   //
-  // # ordering
+  // # ordering & ordering 2
   // 0: SeqCst
   // 1: Relaxed
   // 2: Acquire
   // 3: Release
   // 4: Acquire-Release
+  //
+  // Ordering 2 is ONLY used for `CAS` but must be valid
   //
   // Please Note : Only our interpreter and LLVM Compiler JIT respects the ordering, cranelift is pinned by `SeqCst`. It should not
   // lead to real world instability as the interpreter still respects ordering to ensure races don't show up ONLY in LLVM JIT
@@ -961,13 +994,15 @@ instruction! {
   // Here is the instruction defined space
   // ret[4-bit] e[4-bit] x[4-bit] p1[4-bit]
   //
-  // ret (v3) = Return location [Allocate 2x the type width; 1st stores the fetched output, 2nd stores a boolean (all ones for true, zeroes for false)]
+  // ret (v3) = Return location [Allocate 2x the type width; 1st stores the fetched output, 2nd stores a boolean]
   // e (v2) = Expected value (in the expected type)
   // x (v1) = Value to be stored (in the type)
   // p1 (v0) = Location that contains pointer (read as usize, assume u64 for cross-compatibility)
   //
-  // Atomic Ordering specified above is for SUCCESS case
-  // For FAILURE, we look at r8 for atomic ordering, so please ensure it is correct [read as u8 i.e. bits 0to7]
+  // ordering = success
+  // ordering2 = failure
+  //
+  // Our boolean - by definition is defined as all zeroes for FALSE and rest for TRUE
   //
   // # Store
   // Stores a value to the atomic memory region
