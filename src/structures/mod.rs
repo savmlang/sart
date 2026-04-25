@@ -1,7 +1,7 @@
 use std::{os::raw::c_void, ptr::null};
 
 pub mod ffi;
-pub mod jit;
+pub use serde;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
