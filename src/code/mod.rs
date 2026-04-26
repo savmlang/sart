@@ -35,7 +35,7 @@ impl<T> SwappableCodeStore<T> {
 
   /// This also returns FLAGS, currently is the format
   ///
-  /// <reserved> [1: PINNED] [0: JIT]
+  /// <reserved> [0: PINNED]
   pub fn get(&self) -> (u8, CodeGuard<T>) {
     loop {
       let old = self.lock.fetch_add(1, Ordering::Acquire);
