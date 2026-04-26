@@ -67,7 +67,7 @@ pub struct VMTaskState {
   pub curline_or_resume: Packed64,
   /// This stores the pointer to the engine
   /// But during cooperative async, this is replaced with the pointer of
-  /// of the AsyncTask (for FFI created async; pt)
+  /// of the FutureTask (for FFI created async; pt)
   ///
   /// or, NULL for bytecode defined async
   ///
@@ -120,6 +120,8 @@ pub mod FLAGS {
   // This VMTaskState is the 1st task state in the chain
   // This means only this task chain can actually request vm to poll
   pub const FLAG_FIRST: u32 = 0b000000000000000000000000000000010;
+
+  pub const FLAG_JUMP_TO_RESUME: u32 = 0b000000000000000000000000000000100;
 }
 
 #[rustfmt::skip]
