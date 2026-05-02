@@ -9,3 +9,6 @@ pastey = "^0.2"
 serde = { version = "^1", features = ["derive"] }
 
 saffi = { path = "./saffi/ffi" }
+
+# LibFFI System
+libffi-sys = "^4"

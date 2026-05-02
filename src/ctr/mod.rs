@@ -32,6 +32,7 @@ pub struct FnInstr {
 /// PLEASE DO NOT CHANGE THE LAYOUT, IT MAY BREAK
 /// 32-bit CPUs benefit from 64-bit alignment as well, not changing alignment
 #[repr(C, align(64))]
+#[derive(Clone, Copy)]
 pub struct VMTaskState {
   // Register Structures (64*8 bits, 64bytes)
   pub r1: QuadPackedData,
@@ -102,6 +103,7 @@ pub struct CVMTaskState {
 }
 
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub union Packed64 {
   pub unsigned: u64,
   pub signed: i64,
@@ -897,7 +899,15 @@ instruction! {
   // Sync calling
   //
   // The syntax is
-  // `synccall <section id as u64>`
+  // `synccall <regsign (u8)> <section id as u64>`
+  //
+  // ## RegsIgn - registers not needed to be provided to the callee
+  // bit 0 = r1
+  // bit 1 = r2
+  // ..
+  // bit 7 = r8
+  //
+  // Note: This is not a security measure and is instead a way to optimize JIT
   //
   // Please note that using `synccall` for async SectionID is full on undefined
   //
@@ -914,14 +924,14 @@ instruction! {
   // - If the calling section is a sync section, This is perfectly block
   29 => asynccall,
 
-  // Task and Thread Management
+  // Thread and Task Spawning
   //
-  // `spawn <section id as u64> <flags (6-bits)> <scratchpad start index (5-bits)> <total to copy (5-bits)>`
+  // `spawn <section id as u64> u16%[<flags (6-bits)> <scratchpad start index (5-bits)> <total to copy (5-bits)>]`
   //
   // Note that count to copy is calculated in terms of count of 64-BIT (8 byte) chunks
   //
   // ## Flags:
-  //    [TaskOut] [ASYNC] [HWND]
+  //    [TaskOut (4-bits)] [ASYNC (1-bit)] [HWND (1-bit)]
   // - HWND: Return a Spawn Handle (please note that failure to `task detach/join` will lead to memory leak)
   // - ASYNC: The module is an async module
   //
@@ -957,7 +967,8 @@ instruction! {
   // - 8: sync yield (yields the current thread)
   // - 9: sync park (parks the current thread, some other thread MUST unpark it to continue)
   // - 10: async yield (yields the current task ONLY)
-  // - 11: wait (ms)
+  // - 11: sync wait (ms)
+  // - 12: async wait (ms)
   31 => task,
 
   // Atomic Instruction Family
