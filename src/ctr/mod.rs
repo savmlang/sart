@@ -926,12 +926,12 @@ instruction! {
 
   // Thread and Task Spawning
   //
-  // `spawn <section id as u64> u16%[<flags (6-bits)> <scratchpad start index (5-bits)> <total to copy (5-bits)>]`
+  // `spawn <section id as u64> <flags (8-bits)>`
   //
   // Note that count to copy is calculated in terms of count of 64-BIT (8 byte) chunks
   //
   // ## Flags:
-  //    [TaskOut (4-bits)] [ASYNC (1-bit)] [HWND (1-bit)]
+  //    [Padding (2-bits)] [TaskOut (4-bits)] [ASYNC (1-bit)] [HWND (1-bit)]
   // - HWND: Return a Spawn Handle (please note that failure to `task detach/join` will lead to memory leak)
   // - ASYNC: The module is an async module
   //
@@ -941,11 +941,10 @@ instruction! {
   // For async tasks, this only writes the only TaskOut (HANDLE) [8-bytes stored]
   //
   // ## TaskOut for SYNC
-  // For sync tasks, [TaskOut] stores the HANDLE and [TaskOut]+1 stores THREAD_HANDLE [16-bytes stored].
+  // For sync tasks, [TaskOut] stores the HANDLE [8-bytes].
   //
   // ## Warning:
   // - Failure to correctly mark as ASYNC/SYNC can lead to undefined behaviour
-  // - For SYNC Tasks, both the HANDLE and THREAD_HANDLE has to be detached/joined and detached respectively, if HWND is specified
   // - Apart from scratchpad, your current thread's FULL REGISTER MAP (r1 through r8) is copied to the new thread's memory
   30 => spawn,
 
@@ -967,8 +966,10 @@ instruction! {
   // - 8: sync yield (yields the current thread)
   // - 9: sync park (parks the current thread, some other thread MUST unpark it to continue)
   // - 10: async yield (yields the current task ONLY)
-  // - 11: sync wait (ms)
-  // - 12: async wait (ms)
+  // - 11: async sleep (ms);
+  // - 12: sync sleep (ms; blocks the entire thread); def points to a location with the timeas u64
+  //
+  //
   31 => task,
 
   // Atomic Instruction Family
