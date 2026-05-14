@@ -249,10 +249,10 @@ instruction! {
   //  [Src1] [Target1]
   //
   // ## Src1, Target1 has the following value composition
-  // - 1-7: Register r2 through r7 indices
+  // - 0-7: Register r1 through r8 indices
   // - 8: Small Scratchpad
   // - 9: Large Scratchpad
-  // - 10: Pointer, pointer read from r2 as 64-bit pointer
+  // - 10: Pointer, pointer read from r1 as 64-bit pointer
   //
   // the 32-bit in base src1, base target2 gets treated as +-offset
   01 => vcopy,
