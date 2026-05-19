@@ -13,3 +13,7 @@ saffi = { path = "./saffi/ffi" }
 
 # LibFFI System
 libffi-sys = "^4"
+
+[features]
+default = []
+ffi_system = ["libffi-sys/system"]
