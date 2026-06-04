@@ -232,16 +232,17 @@ instruction! {
   // - 1: Get count from r1 [Triggers massive stackload on JIT dispatch]
   //
   // # Memory Flags
-  // bits 5..7 [padding (2-bits)]
-  // bits 4..5 [non overlapping (1-bit)] # Ensures that src, target dont overlap
+  // bit 6 [padding (1-bit)]
+  // bit 5 [volatile (1-bit)] # Informs that the memory is volatile, preventing Elimination and Move
+  // bit 4 [non overlapping (1-bit)] # Ensures that src, target dont overlap
   // bits 2..4 [alignment data (2-bits)] # for source
   // bits 0..2 [alignment data (2-bits)] # for target
   //
   // ## Alignment Data
   // 00: Unknown (Assumes unaligned)
-  // 01: 16-bytes (Allows ALIGNED AVX)
-  // 10: 32-bytes (Allows ALIGNED AVX2)
-  // 11: 64-bytes (Allows ALIGNED AVX512)
+  // 01: 16-bytes
+  // 10: 32-bytes
+  // 11: 64-bytes
   //
   // Count is taken as number of entities (vcopy implicitly assumes entity = bytes)
   //
@@ -886,7 +887,7 @@ instruction! {
   // - 2: 64B alignment
   //
   // ## Src1, Src2, Src3, Target1 has the following value composition
-  // - 1-7: Register r2 through r8 indices
+  // - 0-7: Register r1 through r8 indices
   // - 8: Small Scratchpad
   // - 9: Large Scratchpad
   // - 10: Pointer, pointer read from r2 as 64-bit pointer
