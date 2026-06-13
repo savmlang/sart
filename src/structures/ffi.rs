@@ -26,6 +26,7 @@ pub struct FDecl {
   pub sig: CallSig,
 }
 
+#[repr(C)]
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum CallSig {
   /// Define your own Calling Signature
@@ -80,6 +81,7 @@ pub enum CallSig {
   ),
 }
 
+#[repr(C)]
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct UnsafeSaFFIProfile {
   // bit 0..8 = R1..R8
@@ -126,17 +128,20 @@ impl UnsafeSaFFIProfile {
   }
 }
 
+#[repr(C)]
 #[derive(Debug)]
 pub enum ParseError {
   FoundInvalidReg,
 }
 
+#[repr(C)]
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct CDef {
   pub inargs: Box<[MapValue]>,
   pub out: COut,
 }
 
+#[repr(C)]
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum COut {
   /// ```rust
@@ -208,6 +213,7 @@ impl COut {
   }
 }
 
+#[repr(C)]
 #[derive(Debug, Serialize, Deserialize, Clone, Copy)]
 pub struct MapValue {
   pub vtype: VType,
@@ -238,6 +244,7 @@ impl VReg {
   }
 }
 
+#[repr(C)]
 #[derive(Debug, Serialize, Deserialize, Clone, Copy)]
 pub enum VType {
   U64,
@@ -412,6 +419,7 @@ impl VType {
   }
 }
 
+#[repr(C)]
 #[derive(Debug, Serialize, Deserialize, Clone, Copy)]
 /// A structure, that stores from 1..=8
 pub struct U3(NonZero<u8>);
@@ -428,6 +436,7 @@ impl U3 {
   }
 }
 
+#[repr(C)]
 #[derive(Debug, Serialize, Deserialize, Clone, Copy)]
 pub enum VReg {
   R1,
