@@ -253,7 +253,8 @@ instruction! {
   // - 0-7: Register r1 through r8 indices
   // - 8: Small Scratchpad
   // - 9: Large Scratchpad
-  // - 10: Pointer, pointer read from r1 as 64-bit pointer
+  // - 10: Pointer, pointer read from r2 as 64-bit pointer
+  // - 11: Pointer, pointer read from r3 as 64-bit pointer
   //
   // the 32-bit in base src1, base target2 gets treated as +-offset
   01 => vcopy,
@@ -268,10 +269,24 @@ instruction! {
   //
   // `mov <source register id (4bits)> <target register id (4bits)>`
   02 => mov,
-  // Load a value in a Register.
+  // Load a value (upto 8bytes) in a Register.
   // This is a scalar instruction that writes a constant to the register
   //
-  // `reg <register (8bits)> 0xFFFFFFFFFFFFFFFF (64-bits)`
+  // `reg [<padding (2bits)> <width (2 bits)> <register (4 bits)>] <offset as u8> 0xFFFFFFFFFFFFFFFF (64-bit immediate)`
+  //
+  // The width is given as follows:
+  // - 0: 64bits
+  // - 1: 32bits
+  // - 2: 16bits
+  // - 3: 8bit
+  //
+  // ## Src1, Target1 has the following value composition
+  // - 0-7: Register r1 through r8 indices
+  // - 8: Small Scratchpad
+  // - 9: Large Scratchpad
+  // - 10: Pointer, pointer read from r2 as 64-bit pointer
+  //
+  // Offset is given in COUNT
   //
   // Please note that you must ensure the data follows
   // Little-Endian Standard
