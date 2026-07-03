@@ -433,8 +433,6 @@ instruction! {
   // ## Syntax
   // `vaddf <flags as u16> <count in u32> <base src1 as i32> <base src2 as i32> <base target1 as i32>`
   //
-  // The carry is stored exactly how `cmp` stores it, you can jif for overflow (and select your type, unsigned or unsigned) to get the carry bit
-  //
   // # Type tag is defined above
   // The flags is split like this into (4-bits + 3 x 4-bit parts):
   //   [00 <inst defined> <float type>] [Src1] [Src2] [Target1]

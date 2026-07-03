@@ -3,7 +3,7 @@ use std::{
   mem::{forget, offset_of},
   num::NonZeroU32,
   ops::Deref,
-  sync::atomic::{AtomicPtr, AtomicU32, Ordering},
+  sync::atomic::{AtomicPtr, AtomicU32, AtomicUsize, Ordering},
 };
 
 #[derive(Debug)]
@@ -23,12 +23,13 @@ const SH_AMT: u32 = 30;
 pub const U8_PINNED: u8 = 1 << 0;
 
 impl<T> SwappableCodeStore<T> {
-  pub fn new(code: T) -> Self {
+  pub fn new(code: T, parent_counter: *mut usize) -> Self {
     Self {
       lock: AtomicU32::new(0),
       code: AtomicPtr::new(Box::into_raw(Box::new(StoredCode {
         refcount: AtomicU32::new(1),
         code,
+        parent_counter,
       }))),
     }
   }
@@ -85,7 +86,13 @@ impl<T> SwappableCodeStore<T> {
   /// WARNING: Multiple writers is undefined behaviour
   ///
   /// flags: <reserved> [0: PINNED]
-  pub unsafe fn set(&self, flags: u8, data: T, tries: Option<NonZeroU32>) -> Option<()> {
+  pub unsafe fn set(
+    &self,
+    flags: u8,
+    data: T,
+    parent_counter: *mut usize,
+    tries: Option<NonZeroU32>,
+  ) -> Option<()> {
     let mut initial = self.lock.load(Ordering::Relaxed);
 
     let mut iteration = 0;
@@ -127,6 +134,7 @@ impl<T> SwappableCodeStore<T> {
     let ptr = Box::into_raw(Box::new(StoredCode {
       refcount: AtomicU32::new(1),
       code: data,
+      parent_counter,
     }));
     let old_ptr = self.code.swap(ptr, Ordering::AcqRel);
     unsafe { CodeGuard::dec(old_ptr) };
@@ -156,6 +164,7 @@ impl<T> Drop for SwappableCodeStore<T> {
 pub struct StoredCode<T> {
   refcount: AtomicU32,
   code: T,
+  parent_counter: *mut usize,
 }
 
 pub struct CodeGuard<T>(*mut StoredCode<T>);
@@ -200,7 +209,11 @@ impl<T> CodeGuard<T> {
 
     // Drop time!
     if old == 1 {
-      unsafe { drop(Box::from_raw(r)) };
+      unsafe {
+        // Unload parent for JIT GC
+        AtomicUsize::from_ptr((*r).parent_counter).fetch_sub(1, Ordering::Relaxed);
+        drop(Box::from_raw(r))
+      };
     }
   }
 }
