@@ -4,3 +4,4 @@ pub mod structures;
 
 pub use saffi;
 pub use saffi::salloc;
+pub use saffi::savmasync;
