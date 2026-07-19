@@ -142,7 +142,7 @@ impl<T> SwappableCodeStore<T> {
 
     _ = self
       .lock
-      .fetch_update(Ordering::Release, Ordering::Acquire, |old| {
+      .try_update(Ordering::Release, Ordering::Acquire, |old| {
         // Remove locked, remove LOCKED data
         let flags_mask = ((flags as u32) << SH_AMT) & PINNED;
         Some(old & !LOCKED | flags_mask)
