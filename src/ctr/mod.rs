@@ -64,21 +64,15 @@ pub struct VMTaskState {
   /// Instruction pointer in bytecode.
   /// Resume data for JIT under JIT-Code
   ///
-  /// Please also note that, under JIT, it is used very differently
+  /// Please also note that, under JIT, it is used for RESUME points
   pub curline_or_resume: Packed64,
   /// This stores the pointer to the engine
-  /// But during cooperative async, this is replaced with the pointer of
-  /// of the FutureTask (for FFI created async; pt)
-  ///
-  /// or, NULL for bytecode defined async
   ///
   /// This is interpreter's favourite location to embed data
   /// in interpretation mode
-  pub engine_or_pt: Packed64,
+  pub engine: Packed64,
   /// Generally stores the pointer to WorkingState Structure
-  ///
-  /// Use 2: Stores the second part of FutureTask (pt2)
-  pub ws_or_pt2: Packed64,
+  pub ws: Packed64,
 
   _padding: [u8; 8],
 }
@@ -114,35 +108,22 @@ pub union Packed64 {
 
 #[rustfmt::skip]
 #[allow(non_snake_case)]
+/// Init check FLAGS
 pub mod FLAGS {
-  // The function is running under async-aware subsystem
-  // It makes the JIT not call the sync poll async method
-  pub const FLAG_ASYNC: u32 = 0b000000000000000000000000000000001;
+  /// This VMTaskState is the 1st task state in the chain
+  /// This means only this task chain can actually request vm to poll
+  pub const FLAG_FIRST: u32 = 0b000000000000000000000000000000001;
 
-  // This VMTaskState is the 1st task state in the chain
-  // This means only this task chain can actually request vm to poll
-  pub const FLAG_FIRST: u32 = 0b000000000000000000000000000000010;
-
-  pub const FLAG_JUMP_TO_RESUME: u32 = 0b000000000000000000000000000000100;
+  pub const FLAG_JUMP_TO_RESUME: u32 = 0b000000000000000000000000000000010;
 }
 
 #[rustfmt::skip]
 #[allow(non_snake_case)]
+/// Suspension Opcode Reasons
 pub mod OPCODES {
   pub const OPCODE_OK: u32 = 0;
 
-  pub const OPCODE_YIELD: u32 = 1;
-
-  pub const OPCODE_SLEEP_MS: u32 = 2;
-
-  // This task has suspended due to a libcall or VM await method
-  pub const OPCODE_AWAIT: u32 = 3;
-
-  // This task state has suspended due to a forward recurse
-  // This also is called for async SaVM functions since no
-  //
-  // SaVM function is async without a libcall await
-  pub const OPCODE_RECURSE: u32 = 4;
+  pub const OPCODE_JIT_CHECK: u32 = 1;
 }
 
 #[repr(C, align(64))]
@@ -291,8 +272,17 @@ instruction! {
   // Please note that you must ensure the data follows
   // Little-Endian Standard
   03 => reg,
+
   // This is bytecode resolver guidance
   // The mark is followed by a 64-bit id
+  //
+  // ## JITUp Bit
+  // if the 63th bit is `1` - it is entitled to JIT check (modulo)128 during the JIT's dispatch
+  // Also, only these markers increment the JIT check integer
+  //
+  // This also means that these markers trigger a full SYNC to vm to check for JIT and OSR
+  //
+  // ## General
   //
   // It is assumed Little-Endian but has no significant interpretation
   //
@@ -922,21 +912,7 @@ instruction! {
   // bit 7 = r8
   //
   // Note: This is not a security measure and is instead a way to optimize JIT
-  //
-  // Please note that using `synccall` for async SectionID is full on undefined
-  //
-  // ## ⚠️ Performance Regression
-  // On async module, this blocks.
   28 => synccall,
-  // Async Call
-  //
-  // The syntax is
-  // `asynccall <section id as u64> <mark id (to resume from) as u64>`
-  //
-  // Please note:
-  // - If the calling section is async-enabled, This is perfectly cooperatively poll
-  // - If the calling section is a sync section, This is perfectly block
-  29 => asynccall,
 
   // Thread and Task Spawning
   //
@@ -945,22 +921,16 @@ instruction! {
   // Note that count to copy is calculated in terms of count of 64-BIT (8 byte) chunks
   //
   // ## Flags:
-  //    [Padding (2-bits)] [TaskOut (4-bits)] [ASYNC (1-bit)] [HWND (1-bit)]
+  //    [Padding (3-bits)] [TaskOut (4-bits)] [HWND (1-bit)]
   // - HWND: Return a Spawn Handle (please note that failure to `task detach/join` will lead to memory leak)
-  // - ASYNC: The module is an async module
   //
   // TaskOut is the location to write the handle, if HWND is selected
   //
-  // ## TaskOut for ASYNC
-  // For async tasks, this only writes the only TaskOut (HANDLE) [8-bytes stored]
-  //
-  // ## TaskOut for SYNC
-  // For sync tasks, [TaskOut] stores the HANDLE [8-bytes].
+  // [TaskOut] stores the HANDLE [8-bytes].
   //
   // ## Warning:
-  // - Failure to correctly mark as ASYNC/SYNC can lead to undefined behaviour
   // - Apart from scratchpad, your current thread's FULL REGISTER MAP (r1 through r8) is copied to the new thread's memory
-  30 => spawn,
+  29 => spawn,
 
   // Task operation
   //
@@ -969,22 +939,16 @@ instruction! {
   // As marker implies, this implementation always does an implicit JMP after the task
   //
   // # Sub Op
-  // - 0: async task detach
-  // - 1: async task join
-  // - 2: async task is_complete (always updates to r8, 0=false,!0=true)
-  // - 3: sync task detach
-  // - 4: sync task join
-  // - 5: sync task is_complete (always updates to r8, 0=false,!0=true)
-  // - 6: sync thread unpark
-  // - 7: sync thread handle detach
-  // - 8: sync yield (yields the current thread)
-  // - 9: sync park (parks the current thread, some other thread MUST unpark it to continue)
-  // - 10: async yield (yields the current task ONLY)
-  // - 11: async sleep (ms);
-  // - 12: sync sleep (ms; blocks the entire thread); def points to a location with the timeas u64
+  // - 1: sync task detach
+  // - 2: sync task join
+  // - 3: sync task is_complete (always updates to r8, 0=false,!0=true)
+  // - 4: sync thread unpark
+  // - 5: sync thread handle detach
+  // - 6: sync yield (yields the current thread)
+  // - 7: sync park (parks the current thread, some other thread MUST unpark it to continue)
+  // - 8: sync sleep (ms; blocks the entire thread); def points to a location with the timeas u64
   //
-  //
-  31 => task,
+  30 => task,
 
   // Atomic Instruction Family
   //
@@ -1059,7 +1023,7 @@ instruction! {
   //
   // p1 (v0) = Location that contains pointer (read as u64, assume u64 for cross-compatibility)
   // ret (v1) = Location to where to store
-  32 => atomic,
+  31 => atomic,
 
   // Scratchpad Management Protocols
   //
@@ -1088,5 +1052,5 @@ instruction! {
   // # Dealloc
   //
   // This takes no extra arguments!
-  33 => scratch
+  32 => scratch
 }

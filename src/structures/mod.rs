@@ -1,7 +1,21 @@
 use std::{os::raw::c_void, ptr::null};
 
 pub mod ffi;
+use saffi::FFISafe;
 pub use serde;
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct R7R8 {
+  pub r7: QuadPackedData,
+  pub r8: QuadPackedData,
+}
+
+unsafe impl FFISafe for R7R8 {
+  fn i_am_ffisafe() -> saffi::IAmFFISafe {
+    saffi::I_DECLARE_THAT_I_AND_MY_CODEBASE_IS_FFI_SAFE_AND_THAT_UNDEFINED_BEHAVIOUR_ARISING_DUE_TO_DECLARING_MY_TYPES_FFI_SAFE_DOES_NOT_CONDONE_THE_SAFETY_AND_SECURITY_OF_THIS_PROJECT
+  }
+}
 
 #[repr(C)]
 #[derive(Clone, Copy)]
