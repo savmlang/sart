@@ -56,6 +56,8 @@ pub struct VMTaskState {
   ///
   /// Used by Interpreter and Tier 1 JIT
   pub ame: *mut AggressiveMatrixExtension,
+  #[cfg(target_pointer_width = "32")]
+  _2: [u8; 4],
 
   // --- Hot Path Flags (0-7) ---
   pub flags: u32,
