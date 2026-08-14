@@ -12,8 +12,12 @@ serde = { version = "^1", features = ["derive"] }
 saffi = { path = "./saffi/ffi" }
 
 # LibFFI System
-libffi-sys = "^4"
+libffi-sys = { version = "^4", optional = true }
 
 [features]
 default = []
+libffi = ["dep:libffi-sys"]
 ffi_system = ["libffi-sys/system"]
+
+# WASM Compat
+wasm = ["saffi/wasm"]

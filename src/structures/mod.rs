@@ -1,6 +1,8 @@
 use std::{os::raw::c_void, ptr::null};
 
+#[cfg(feature = "libffi")]
 pub mod ffi;
+
 use saffi::FFISafe;
 pub use serde;
 
