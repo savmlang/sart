@@ -73,10 +73,15 @@ pub struct VMTaskState {
   /// This is interpreter's favourite location to embed data
   /// in interpretation mode
   pub engine: Packed64,
-  /// Generally stores the pointer to WorkingState Structure
+
+  /// This is the miscellaneous pointer
+  ///
+  /// 1. In interpreter: Pointer to the first pickle instruction
+  /// 2. In normal JIT: Pointer to the WS
+  /// 2. In cinderjit: Pointer to a DispatchTable for Cinder
   pub ws: Packed64,
 
-  _padding: [u8; 8],
+  _reserved: [u8; 8],
 }
 
 #[repr(C, align(64))]
