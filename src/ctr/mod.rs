@@ -402,7 +402,7 @@ instruction! {
   //
   // # Carry/Sigflow bit
   // - 0: Does not emit carry or other flags
-  // - 1: Transforms into ADC, r5 is treated as carry bit and it sets overflow in r5, please note this needs count=1 exactly
+  // - 1: Transforms into ADC, r5 is treated as carry bit and it sets overflow in r5, please note this needs count=1 exactly & r5 is always treated as 64bits
   //
   // # Aligned BIT
   // If set to `1` it signals the JIT compiler to assume alignment. `UNSAFE`: If unsure, it can lead to Heisenbergs that we currently don't check at the interpreter
@@ -457,7 +457,7 @@ instruction! {
   //
   // # Carry/Sigflow bit
   // - 0: Does not emit carry or other flags
-  // - 1: Transforms into SBB, r5 is treated as borrow bit and it sets flags like borrow in r5 back, please note this needs count=1 exactly
+  // - 1: Transforms into SBB, r5 is treated as borrow bit and it sets flags like borrow in r5 back, please note this needs count=1 exactly & r5 is always treated as 64bits
   10 => vsub,
   // True Vectored Floating Subtraction Operator
   //
@@ -821,7 +821,7 @@ instruction! {
   // # Op
   // - 0: POPCNT (Population Count)
   // - 1: Count leading zeroes
-  // - 2: Count leading sign bits
+  // - 2: Count leading sign bits (excluding the sign bit itself)
   // - 3: Count trailing zeroes
   //
   // ## Src1, Target1 has the following value composition
