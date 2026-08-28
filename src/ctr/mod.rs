@@ -965,7 +965,7 @@ instruction! {
   //
   // Natural alignment is forced
   //
-  // [Sub Opcode (2-bits)] [type (3-bit)] [ordering (3-bits)] [ordering2 (3-bits)] [offset v0 (u8)] [offset v1 (u8)] [offset v2 (u8)] [offset v3 (u8)] [instruction defined (16-bit)]
+  // (u8 [Sub Opcode (2-bits)] [type (3-bit)] [ordering (3-bits)]) (u8 [ordering2 (3-bits)]) [offset v0 (u8)] [offset v1 (u8)] [offset v2 (u8)] [offset v3 (u8)] [instruction defined (16-bit)]
   //
   // # ordering & ordering 2
   // 0: SeqCst
